@@ -32,6 +32,7 @@ import (
 	"k8s.io/apiserver/pkg/storage/names"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/controllers/external"
+	"sigs.k8s.io/cluster-api/controllers/remote"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/collections"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -76,6 +77,32 @@ func (r *KThreesControlPlaneReconciler) initializeControlPlane(ctx context.Conte
 	return ctrl.Result{Requeue: true}, nil
 }
 
+func (r *KThreesControlPlaneReconciler) initializeAgentlessControlPlane(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane) (ctrl.Result, error) {
+    logger := ctrl.LoggerFrom(ctx)
+
+    controlPlaneCluster, err := controlPlane.GetControlPlaneClusterObjectKey()
+    if (err != nil) {
+        logger.Error(err, "Failed to get control plane cluster object key")
+        return ctrl.Result{}, err
+    }
+
+    remoteClient, err := remote.NewClusterClient(ctx, "", r.Client, controlPlaneCluster)
+    if err != nil {
+        logger.Error(err, "Failed to create client to control plane cluster")
+        return ctrl.Result{}, err
+    }
+
+    // Create the control plane pod
+    if err := r.createControlPlaneDeployment(ctx, remoteClient, cluster, kcp, controlPlane); err != nil {
+        logger.Error(err, "Failed to create control plane deployment")
+        r.recorder.Eventf(kcp, corev1.EventTypeWarning, "FailedScaleUp", "Failed to create control plane pod for cluster %s/%s control plane: %v", cluster.Namespace, cluster.Name, err)
+        return ctrl.Result{}, err
+    }
+
+	// Requeue the control plane, in case there are additional operations to perform
+    return ctrl.Result{Requeue: true}, nil
+}
+
 func (r *KThreesControlPlaneReconciler) scaleUpControlPlane(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane) (ctrl.Result, error) {
 	logger := ctrl.LoggerFrom(ctx)
 
@@ -87,7 +114,7 @@ func (r *KThreesControlPlaneReconciler) scaleUpControlPlane(ctx context.Context,
 	// Create the bootstrap configuration
 	bootstrapSpec := controlPlane.JoinControlPlaneConfig()
 	fd := controlPlane.NextFailureDomainForScaleUp(ctx)
-	if err := r.cloneConfigsAndGenerateMachine(ctx, cluster, kcp, bootstrapSpec, fd); err != nil {
+    if err := r.cloneConfigsAndGenerateMachine(ctx, cluster, kcp, bootstrapSpec, fd); err != nil {
 		logger.Error(err, "Failed to create additional control plane Machine")
 		r.recorder.Eventf(kcp, corev1.EventTypeWarning, "FailedScaleUp", "Failed to create additional control plane Machine for cluster %s/%s control plane: %v", cluster.Namespace, cluster.Name, err)
 		return ctrl.Result{}, err
@@ -95,6 +122,35 @@ func (r *KThreesControlPlaneReconciler) scaleUpControlPlane(ctx context.Context,
 
 	// Requeue the control plane, in case there are other operations to perform
 	return ctrl.Result{Requeue: true}, nil
+}
+
+func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context.Context, remoteClient client.Client, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane) error {
+    logger := ctrl.LoggerFrom(ctx)
+
+    // Create the control plane deployment
+    deployment, err := controlPlane.AgentlessControlPlaneDeployment()
+    if err != nil {
+        return errors.Wrap(err, "failed to create control plane deployment")
+    }
+
+    // Create the control plane deployment
+    if err := remoteClient.Create(ctx, &deployment.Deployment); err != nil {
+        logger.Error(err, "Failed to create control plane pod")
+        return errors.Wrap(err, "failed to create control plane pod")
+    }
+
+    // Create the control plane service
+    if err := remoteClient.Create(ctx, &deployment.Service); err != nil {
+        logger.Error(err, "Failed to create control plane service")
+        return errors.Wrap(err, "failed to create control plane service")
+    }
+
+    if err := remoteClient.Create(ctx, &deployment.TLSRoute); err != nil {
+        logger.Error(err, "Failed to create control plane tls route")
+        return errors.Wrap(err, "failed to create control plane tls route")
+    }
+
+    return nil
 }
 
 func (r *KThreesControlPlaneReconciler) scaleDownControlPlane(

@@ -22,6 +22,10 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+    appsv1 "k8s.io/api/apps/v1"
+    gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+    gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+    resource "k8s.io/apimachinery/pkg/api/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -34,6 +38,9 @@ import (
 	"sigs.k8s.io/cluster-api/util/failuredomains"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+    "k8s.io/apimachinery/pkg/util/intstr"
+
+    
 
 	bootstrapv1 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta2"
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
@@ -54,6 +61,9 @@ type ControlPlane struct {
 	Machines             collections.Machines
 	machinesPatchHelpers map[string]*patch.Helper
 
+    // IsAgentless is true if the control plane is agentless.
+    IsAgentless          bool
+
 	// check if mgmt cluster has target cluster's etcd ca.
 	// for old cluster created before connect-etcd feature, mgmt cluster don't
 	// store etcd ca, controlplane reconcile loop need bypass any etcd operations.
@@ -66,6 +76,12 @@ type ControlPlane struct {
 	// See discussion on https://github.com/kubernetes-sigs/cluster-api/pull/3405
 	KthreesConfigs map[string]*bootstrapv1.KThreesConfig
 	InfraResources map[string]*unstructured.Unstructured
+}
+
+type ControlPlaneAgentlessDeployment struct {
+    Deployment appsv1.Deployment
+    Service corev1.Service
+    TLSRoute gatewayv1alpha2.TLSRoute
 }
 
 // NewControlPlane returns an instantiated ControlPlane.
@@ -100,6 +116,8 @@ func NewControlPlane(ctx context.Context, client client.Client, cluster *cluster
 		return nil, err
 	}
 
+    isAgentless := kcp.Spec.AgentlessConfig != nil
+
 	return &ControlPlane{
 		KCP:                  kcp,
 		Cluster:              cluster,
@@ -109,6 +127,7 @@ func NewControlPlane(ctx context.Context, client client.Client, cluster *cluster
 		KthreesConfigs:       kthreesConfigs,
 		InfraResources:       infraObjects,
 		reconciliationTime:   metav1.Now(),
+        IsAgentless:          isAgentless,
 	}, nil
 }
 
@@ -380,4 +399,116 @@ func (c *ControlPlane) SetPatchHelpers(patchHelpers map[string]*patch.Helper) {
 	for machineName, patchHelper := range patchHelpers {
 		c.machinesPatchHelpers[machineName] = patchHelper
 	}
+}
+
+func (c *ControlPlane) GetControlPlaneClusterObjectKey() (types.NamespacedName, error) {
+    if c.KCP.Spec.AgentlessConfig == nil {
+        return types.NamespacedName{}, errors.New("control plane is not agentless")
+    }
+    return types.NamespacedName{
+        Namespace: c.KCP.Namespace,
+        Name:      c.KCP.Spec.AgentlessConfig.ControlPlaneClusterName,
+    }, nil
+}
+
+// AgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
+func (c *ControlPlane) AgentlessControlPlaneDeployment() (*ControlPlaneAgentlessDeployment, error) {
+    if c.KCP.Spec.AgentlessConfig == nil {
+        return nil, errors.New("control plane is not agentless")
+    }
+
+    controlPlanePort := gatewayv1.PortNumber(6443)
+    controlPlaneNamespace := gatewayv1.Namespace(c.KCP.Namespace)
+
+    return &ControlPlaneAgentlessDeployment{
+        Deployment: appsv1.Deployment{
+            ObjectMeta: metav1.ObjectMeta{
+                Namespace: c.KCP.Namespace,
+                Name:      c.KCP.Name,
+            },
+            Spec: appsv1.DeploymentSpec{
+                Selector: &metav1.LabelSelector{
+                    MatchLabels: map[string]string{
+                        clusterv1.ClusterNameLabel: c.Cluster.Name,
+                    },
+                },
+                Template: corev1.PodTemplateSpec{
+                    ObjectMeta: metav1.ObjectMeta{
+                        Labels: map[string]string{
+                            clusterv1.ClusterNameLabel: c.Cluster.Name,
+                        },
+                    },
+                    Spec: corev1.PodSpec{
+                        Containers: []corev1.Container{
+                            {
+                                Name:  "k3s",
+                                Image: fmt.Sprintf("rancher/k3s:%s", c.KCP.Spec.Version),
+                                Args: []string{
+                                    "server",
+                                    "--disable-agent",
+                                    "--tls-san",
+                                    c.Cluster.Spec.ControlPlaneEndpoint.Host,                  
+                                },
+                                Ports: []corev1.ContainerPort{
+                                    {
+                                        ContainerPort: 6443,
+                                        Name: "kubernetes",
+                                    },
+                                },
+                                Resources: corev1.ResourceRequirements{
+                                    Limits: corev1.ResourceList{
+                                        corev1.ResourceCPU: resource.MustParse("500m"),
+                                        corev1.ResourceMemory: resource.MustParse("100Mi"),
+                                    },
+                                },
+                            },
+                        },
+                    },
+
+                },
+
+            },
+        },
+        Service: corev1.Service{
+            ObjectMeta: metav1.ObjectMeta{
+                Namespace: c.KCP.Namespace,
+                Name:      c.KCP.Name,
+            },
+            Spec: corev1.ServiceSpec{
+                Selector: map[string]string{
+                    clusterv1.ClusterNameLabel: c.Cluster.Name,
+                },
+                Ports: []corev1.ServicePort{
+                    {
+                        Name: "kubernetes",
+                        TargetPort: intstr.FromString("kubernetes"),
+                        Port: 6443,
+                    },
+                },
+            },
+        },
+        TLSRoute: gatewayv1alpha2.TLSRoute{
+            ObjectMeta: metav1.ObjectMeta{
+                Namespace: c.KCP.Namespace,
+                Name:      c.KCP.Name,
+            },
+            Spec: gatewayv1alpha2.TLSRouteSpec{
+                Rules: []gatewayv1alpha2.TLSRouteRule{
+                    {
+                        BackendRefs: []gatewayv1.BackendRef{
+                            {
+                                BackendObjectReference: gatewayv1.BackendObjectReference{
+                                    Name: gatewayv1.ObjectName(c.KCP.Name),
+                                    Namespace: &controlPlaneNamespace,
+                                    Port: &controlPlanePort,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+
+        },
+    },
+    nil
 }

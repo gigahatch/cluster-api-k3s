@@ -461,10 +461,14 @@ func (r *KThreesControlPlaneReconciler) reconcile(ctx context.Context, cluster *
 	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
 	logger.Info("Reconcile KThreesControlPlane")
 
-	// Make sure to reconcile the external infrastructure reference.
-	if err := r.reconcileExternalReference(ctx, cluster, kcp.Spec.MachineTemplate.InfrastructureRef); err != nil {
-		return reconcile.Result{}, err
-	}
+    if kcp.Spec.AgentlessConfig != nil {
+        return r.reconcileAgentless(ctx, cluster, kcp)
+    }
+
+    // Make sure to reconcile the external infrastructure reference.
+    if err := r.reconcileExternalReference(ctx, cluster, kcp.Spec.MachineTemplate.InfrastructureRef); err != nil {
+        return reconcile.Result{}, err
+    }
 
 	certificates := secret.NewCertificatesForInitialControlPlane(&kcp.Spec.KThreesConfigSpec)
 	controllerRef := metav1.NewControllerRef(kcp, controlplanev1.GroupVersion.WithKind("KThreesControlPlane"))
@@ -581,6 +585,105 @@ func (r *KThreesControlPlaneReconciler) reconcile(ctx context.Context, cluster *
 		logger.Info("Scaling down control plane", "Desired", desiredReplicas, "Existing", numMachines)
 		// The last parameter (i.e. machines needing to be rolled out) should always be empty here.
 		return r.scaleDownControlPlane(ctx, cluster, kcp, controlPlane, collections.Machines{})
+	}
+
+	// Get the workload cluster client.
+	/**
+	workloadCluster, err := r.managementCluster.GetWorkloadCluster(ctx, util.ObjectKey(cluster))
+	if err != nil {
+		logger.V(2).Info("cannot get remote client to workload cluster, will requeue", "cause", err)
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Update kube-proxy daemonset.
+	if err := workloadCluster.UpdateKubeProxyImageInfo(ctx, kcp); err != nil {
+		logger.Error(err, "failed to update kube-proxy daemonset")
+		return reconcile.Result{}, err
+	}
+
+	// Update CoreDNS deployment.
+	if err := workloadCluster.UpdateCoreDNS(ctx, kcp); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to update CoreDNS deployment")
+	}
+	**/
+
+	return reconcile.Result{}, nil
+}
+
+func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane) (ctrl.Result, error) {
+	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
+	logger.Info("Reconcile KThreesControlPlane Agentless")
+
+	certificates := secret.NewCertificatesForInitialControlPlane(&kcp.Spec.KThreesConfigSpec)
+	controllerRef := metav1.NewControllerRef(kcp, controlplanev1.GroupVersion.WithKind("KThreesControlPlane"))
+	if err := certificates.LookupOrGenerate(ctx, r.Client, util.ObjectKey(cluster), *controllerRef); err != nil {
+		logger.Error(err, "unable to lookup or create cluster certificates")
+		conditions.MarkFalse(kcp, controlplanev1.CertificatesAvailableCondition, controlplanev1.CertificatesGenerationFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		return reconcile.Result{}, err
+	}
+	conditions.MarkTrue(kcp, controlplanev1.CertificatesAvailableCondition)
+
+	if err := token.Reconcile(ctx, r.Client, client.ObjectKeyFromObject(cluster), kcp); err != nil {
+		conditions.MarkFalse(kcp, controlplanev1.TokenAvailableCondition, controlplanev1.TokenGenerationFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		return reconcile.Result{}, err
+	}
+	conditions.MarkTrue(kcp, controlplanev1.TokenAvailableCondition)
+
+	// If ControlPlaneEndpoint is not set, return early
+	if !cluster.Spec.ControlPlaneEndpoint.IsValid() {
+		logger.Info("Cluster does not yet have a ControlPlaneEndpoint defined")
+		return reconcile.Result{}, nil
+	}
+
+	// Generate Cluster Kubeconfig if needed
+	if result, err := r.reconcileKubeconfig(ctx, util.ObjectKey(cluster), cluster.Spec.ControlPlaneEndpoint, kcp); err != nil {
+		logger.Error(err, "failed to reconcile Kubeconfig")
+		return result, err
+	}
+
+	controlPlane, err := k3s.NewControlPlane(ctx, r.Client, cluster, kcp, nil)
+	if err != nil {
+		logger.Error(err, "failed to initialize control plane")
+		return reconcile.Result{}, err
+	}
+
+	// Aggregate the operational state of all the machines; while aggregating we are adding the
+	// source ref (reason@machine/name) so the problem can be easily tracked down to its source machine.
+	// conditions.SetAggregate(controlPlane.KCP, controlplanev1.MachinesReadyCondition, ownedMachines.ConditionGetters(), conditions.AddSourceRef(), conditions.WithStepCounterIf(false))
+
+    // agentless: maybe set a condition here if the control plane pod is ready?
+
+    // agentless: i think we can keep this here
+	// Updates conditions reporting the status of static pods and the status of the etcd cluster.
+	// NOTE: Conditions reporting KCP operation progress like e.g. Resized or SpecUpToDate are inlined with the rest of the execution.
+	if err := r.reconcileControlPlaneConditions(ctx, controlPlane); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Control plane machines rollout due to configuration changes (e.g. upgrades) takes precedence over other operations.
+	//needRollout := controlPlane.MachinesNeedingRollout()
+    // agentless: we should check if the deployed version matches the target version
+    // todo: handle update logic
+    // needRollout := collections.Machines{}
+
+	// If we've made it this far, we can assume that all ownedMachines are up to date
+    // todo: handle agentless multiple pods
+	numPods := 0
+    if conditions.IsTrue(controlPlane.KCP, controlplanev1.AvailableCondition) {
+        numPods = 1
+    }
+
+	desiredReplicas := 1
+
+	switch {
+	// We are creating the first replica
+	case numPods < desiredReplicas && numPods == 0:
+		// Create new Machine w/ init
+		logger.Info("Initializing agentless control plane", "Desired", desiredReplicas, "Existing", numPods)
+		conditions.MarkFalse(controlPlane.KCP, controlplanev1.AvailableCondition, controlplanev1.WaitingForKthreesServerReason, clusterv1.ConditionSeverityInfo, "")
+		return r.initializeControlPlane(ctx, cluster, kcp, controlPlane)
+	// We are scaling up
+	// We are scaling down
 	}
 
 	// Get the workload cluster client.
