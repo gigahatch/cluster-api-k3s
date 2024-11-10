@@ -412,7 +412,7 @@ func (c *ControlPlane) GetControlPlaneClusterObjectKey() (types.NamespacedName, 
 }
 
 // AgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
-func (c *ControlPlane) AgentlessControlPlaneDeployment() (*ControlPlaneAgentlessDeployment, error) {
+func (c *ControlPlane) CreateAgentlessControlPlaneDeployment() (*ControlPlaneAgentlessDeployment, error) {
     if c.KCP.Spec.AgentlessConfig == nil {
         return nil, errors.New("control plane is not agentless")
     }
@@ -511,4 +511,53 @@ func (c *ControlPlane) AgentlessControlPlaneDeployment() (*ControlPlaneAgentless
         },
     },
     nil
+}
+
+// GetAgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
+func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, client client.Client) (*ControlPlaneAgentlessDeployment, error) {
+    if c.KCP.Spec.AgentlessConfig == nil {
+        return nil, errors.New("control plane is not agentless")
+    }
+
+    deployment := &appsv1.Deployment{}
+    deploymentKey := types.NamespacedName{
+        Namespace: c.KCP.Namespace,
+        Name:      c.KCP.Name,
+    }
+    if err := client.Get(ctx, deploymentKey, deployment); err != nil {
+        if !apierrors.IsNotFound(err) {
+            return nil, nil
+        }
+        return nil, err
+    }
+
+    service := &corev1.Service{}
+    serviceKey := types.NamespacedName{
+        Namespace: c.KCP.Namespace,
+        Name:      c.KCP.Name,
+    }
+    if err := client.Get(ctx, serviceKey, service); err != nil {
+        if !apierrors.IsNotFound(err) {
+            return nil, nil
+        }
+        return nil, err
+    }
+
+    tlsRoute := &gatewayv1alpha2.TLSRoute{}
+    tlsRouteKey := types.NamespacedName{
+        Namespace: c.KCP.Namespace,
+        Name:      c.KCP.Name,
+    }
+    if err := client.Get(ctx, tlsRouteKey, tlsRoute); err != nil {
+        if !apierrors.IsNotFound(err) {
+            return nil, nil
+        }
+        return nil, err
+    }
+
+    return &ControlPlaneAgentlessDeployment{
+        Deployment: *deployment,
+        Service: *service,
+        TLSRoute: *tlsRoute,
+    }, nil
 }

@@ -49,6 +49,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
+	"sigs.k8s.io/cluster-api/controllers/remote"
 	k3s "github.com/k3s-io/cluster-api-k3s/pkg/k3s"
 	"github.com/k3s-io/cluster-api-k3s/pkg/kubeconfig"
 	"github.com/k3s-io/cluster-api-k3s/pkg/machinefilters"
@@ -111,6 +112,8 @@ func (r *KThreesControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	// Wait for the cluster infrastructure to be ready before creating machines
+    // infrastructure is for us the HetznerCluster
+    // i think this should always be true, as soon as the HetznerCluster is reconciled
 	if !cluster.Status.InfrastructureReady {
 		return reconcile.Result{}, nil
 	}
@@ -142,10 +145,19 @@ func (r *KThreesControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.
 	var res ctrl.Result
 	if !kcp.ObjectMeta.DeletionTimestamp.IsZero() {
 		// Handle deletion reconciliation loop.
-		res, err = r.reconcileDelete(ctx, cluster, kcp)
+        if kcp.Spec.AgentlessConfig != nil {
+            return r.deleteAgentless(ctx, cluster, kcp)
+        } else {
+            res, err = r.reconcileDelete(ctx, cluster, kcp)
+        }
 	} else {
 		// Handle normal reconciliation loop.
-		res, err = r.reconcile(ctx, cluster, kcp)
+
+        if kcp.Spec.AgentlessConfig != nil {
+            return r.reconcileAgentless(ctx, cluster, kcp)
+        } else {
+            res, err = r.reconcile(ctx, cluster, kcp)
+        }
 	}
 
 	// Always attempt to update status.
@@ -251,6 +263,17 @@ func (r *KThreesControlPlaneReconciler) reconcileDelete(ctx context.Context, clu
 	}
 	conditions.MarkFalse(kcp, controlplanev1.ResizedCondition, clusterv1.DeletingReason, clusterv1.ConditionSeverityInfo, "")
 	return ctrl.Result{RequeueAfter: deleteRequeueAfter}, nil
+}
+
+func (r *KThreesControlPlaneReconciler) deleteAgentless(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane) (ctrl.Result, error) {
+	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
+	logger.Info("Reconcile KThreesControlPlane agentless deletion")
+
+    // todo: delete the remote deployment here
+    // for now just remove the finalizer 
+	controllerutil.RemoveFinalizer(kcp, controlplanev1.KThreesControlPlaneFinalizer)
+
+    return ctrl.Result{}, nil
 }
 
 func patchKThreesControlPlane(ctx context.Context, patchHelper *patch.Helper, kcp *controlplanev1.KThreesControlPlane) error {
@@ -461,9 +484,6 @@ func (r *KThreesControlPlaneReconciler) reconcile(ctx context.Context, cluster *
 	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
 	logger.Info("Reconcile KThreesControlPlane")
 
-    if kcp.Spec.AgentlessConfig != nil {
-        return r.reconcileAgentless(ctx, cluster, kcp)
-    }
 
     // Make sure to reconcile the external infrastructure reference.
     if err := r.reconcileExternalReference(ctx, cluster, kcp.Spec.MachineTemplate.InfrastructureRef); err != nil {
@@ -641,11 +661,47 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 		return result, err
 	}
 
+    
 	controlPlane, err := k3s.NewControlPlane(ctx, r.Client, cluster, kcp, nil)
 	if err != nil {
 		logger.Error(err, "failed to initialize control plane")
 		return reconcile.Result{}, err
 	}
+
+    // get remote client for control plane cluster
+    controlPlaneCluster, err := controlPlane.GetControlPlaneClusterObjectKey()
+    if (err != nil) {
+        logger.Error(err, "Failed to get control plane cluster object key")
+        return ctrl.Result{}, err
+    }
+
+    remoteClient, err := remote.NewClusterClient(ctx, "", r.Client, controlPlaneCluster)
+    if err != nil {
+        logger.Error(err, "Failed to create client to control plane cluster")
+        return ctrl.Result{}, err
+    }
+
+    deployment, err := controlPlane.GetAgentlessControlPlaneDeployment(ctx, remoteClient)
+    if err != nil {
+        logger.Error(err, "Failed to get agentless control plane deployment")
+        return ctrl.Result{}, err
+    }
+
+    // mark machines ready as true, as we don't have machines
+    conditions.MarkTrue(kcp, controlplanev1.MachinesReadyCondition)
+
+    // check if the deployment is ready
+    numPods := 0
+    desiredReplicas := 1
+    if deployment != nil {
+        numPods = int(deployment.Deployment.Status.Replicas)
+        readyPods := int(deployment.Deployment.Status.ReadyReplicas)
+
+        if readyPods == desiredReplicas {
+            conditions.MarkTrue(kcp, controlplanev1.AvailableCondition)
+        }
+    }
+
 
 	// Aggregate the operational state of all the machines; while aggregating we are adding the
 	// source ref (reason@machine/name) so the problem can be easily tracked down to its source machine.
@@ -666,14 +722,7 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
     // todo: handle update logic
     // needRollout := collections.Machines{}
 
-	// If we've made it this far, we can assume that all ownedMachines are up to date
     // todo: handle agentless multiple pods
-	numPods := 0
-    if conditions.IsTrue(controlPlane.KCP, controlplanev1.AvailableCondition) {
-        numPods = 1
-    }
-
-	desiredReplicas := 1
 
 	switch {
 	// We are creating the first replica
@@ -684,6 +733,7 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 		return r.initializeControlPlane(ctx, cluster, kcp, controlPlane)
 	// We are scaling up
 	// We are scaling down
+    // todo: agentless handle scaling
 	}
 
 	// Get the workload cluster client.

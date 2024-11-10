@@ -32,7 +32,6 @@ import (
 	"k8s.io/apiserver/pkg/storage/names"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/controllers/external"
-	"sigs.k8s.io/cluster-api/controllers/remote"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/collections"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -77,20 +76,8 @@ func (r *KThreesControlPlaneReconciler) initializeControlPlane(ctx context.Conte
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *KThreesControlPlaneReconciler) initializeAgentlessControlPlane(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane) (ctrl.Result, error) {
+func (r *KThreesControlPlaneReconciler) initializeAgentlessControlPlane(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, remoteClient client.Client) (ctrl.Result, error) {
     logger := ctrl.LoggerFrom(ctx)
-
-    controlPlaneCluster, err := controlPlane.GetControlPlaneClusterObjectKey()
-    if (err != nil) {
-        logger.Error(err, "Failed to get control plane cluster object key")
-        return ctrl.Result{}, err
-    }
-
-    remoteClient, err := remote.NewClusterClient(ctx, "", r.Client, controlPlaneCluster)
-    if err != nil {
-        logger.Error(err, "Failed to create client to control plane cluster")
-        return ctrl.Result{}, err
-    }
 
     // Create the control plane pod
     if err := r.createControlPlaneDeployment(ctx, remoteClient, cluster, kcp, controlPlane); err != nil {
@@ -128,7 +115,7 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
     logger := ctrl.LoggerFrom(ctx)
 
     // Create the control plane deployment
-    deployment, err := controlPlane.AgentlessControlPlaneDeployment()
+    deployment, err := controlPlane.CreateAgentlessControlPlaneDeployment()
     if err != nil {
         return errors.Wrap(err, "failed to create control plane deployment")
     }
