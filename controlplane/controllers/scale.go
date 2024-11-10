@@ -38,11 +38,13 @@ import (
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+    "github.com/k3s-io/cluster-api-k3s/pkg/token"
 
 	bootstrapv1 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta2"
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
 	k3s "github.com/k3s-io/cluster-api-k3s/pkg/k3s"
 	"github.com/k3s-io/cluster-api-k3s/pkg/util/ssa"
+	"github.com/k3s-io/cluster-api-k3s/pkg/secret"
 )
 
 var ErrPreConditionFailed = errors.New("precondition check failed")
@@ -76,11 +78,15 @@ func (r *KThreesControlPlaneReconciler) initializeControlPlane(ctx context.Conte
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *KThreesControlPlaneReconciler) initializeAgentlessControlPlane(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, remoteClient client.Client) (ctrl.Result, error) {
+func (r *KThreesControlPlaneReconciler) initializeAgentlessControlPlane(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, remoteClient client.Client, certificates secret.Certificates) (ctrl.Result, error) {
     logger := ctrl.LoggerFrom(ctx)
 
+	token, err := token.Lookup(ctx, r.Client, client.ObjectKeyFromObject(cluster))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
     // Create the control plane pod
-    if err := r.createControlPlaneDeployment(ctx, remoteClient, cluster, kcp, controlPlane); err != nil {
+    if err := r.createControlPlaneDeployment(ctx, remoteClient, cluster, kcp, controlPlane, token, certificates); err != nil {
         logger.Error(err, "Failed to create control plane deployment")
         r.recorder.Eventf(kcp, corev1.EventTypeWarning, "FailedScaleUp", "Failed to create control plane pod for cluster %s/%s control plane: %v", cluster.Namespace, cluster.Name, err)
         return ctrl.Result{}, err
@@ -111,11 +117,11 @@ func (r *KThreesControlPlaneReconciler) scaleUpControlPlane(ctx context.Context,
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context.Context, remoteClient client.Client, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane) error {
+func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context.Context, remoteClient client.Client, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, token *string, certificates secret.Certificates) error {
     logger := ctrl.LoggerFrom(ctx)
 
     // Create the control plane deployment
-    deployment, err := controlPlane.CreateAgentlessControlPlaneDeployment()
+    deployment, err := controlPlane.CreateAgentlessControlPlaneDeployment(token)
     if err != nil {
         return errors.Wrap(err, "failed to create control plane deployment")
     }
@@ -135,6 +141,25 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
     if err := remoteClient.Create(ctx, &deployment.TLSRoute); err != nil {
         logger.Error(err, "Failed to create control plane tls route")
         return errors.Wrap(err, "failed to create control plane tls route")
+    }
+
+    if err := certificates.EnsureAllExist() ; err != nil {
+        logger.Error(err, "Failed to ensure all certificates exist")
+        return errors.Wrap(err, "failed to ensure all certificates exist")
+    }
+
+    for _, certficate := range certificates {
+        secret := certficate.AsSecret(cluster.GetClassKey(), metav1.OwnerReference{})
+
+        if err := remoteClient.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+            logger.Error(err, "Failed to delete secret")
+            return errors.Wrap(err, "failed to delete secret")
+        }
+
+        if err := remoteClient.Create(ctx, secret); err != nil {
+            logger.Error(err, "Failed to create secret")
+            return errors.Wrap(err, "failed to create secret")
+        }
     }
 
     return nil

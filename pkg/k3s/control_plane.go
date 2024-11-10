@@ -412,7 +412,7 @@ func (c *ControlPlane) GetControlPlaneClusterObjectKey() (types.NamespacedName, 
 }
 
 // AgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
-func (c *ControlPlane) CreateAgentlessControlPlaneDeployment() (*ControlPlaneAgentlessDeployment, error) {
+func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*ControlPlaneAgentlessDeployment, error) {
     if c.KCP.Spec.AgentlessConfig == nil {
         return nil, errors.New("control plane is not agentless")
     }
@@ -449,6 +449,12 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment() (*ControlPlaneAge
                                     "--tls-san",
                                     c.Cluster.Spec.ControlPlaneEndpoint.Host,                  
                                 },
+                                Env: []corev1.EnvVar{
+                                    {
+                                        Name: "K3S_TOKEN",
+                                        Value: *token,
+                                    },
+                                },
                                 Ports: []corev1.ContainerPort{
                                     {
                                         ContainerPort: 6443,
@@ -459,6 +465,54 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment() (*ControlPlaneAge
                                     Limits: corev1.ResourceList{
                                         corev1.ResourceCPU: resource.MustParse("500m"),
                                         corev1.ResourceMemory: resource.MustParse("100Mi"),
+                                    },
+                                },
+                                VolumeMounts: []corev1.VolumeMount{
+                                    {
+                                        Name: "server-ca",
+                                        MountPath: "/var/lib/rancher/k3s/server/tls",
+                                    },
+                                    {
+                                        Name: "client-ca",
+                                        MountPath: "/var/lib/rancher/k3s/client/tls",
+                                    },
+                                },
+                            },
+                        },
+                        Volumes: []corev1.Volume{
+                            {
+                                Name: "server-ca",
+                                VolumeSource: corev1.VolumeSource{
+                                    Secret: &corev1.SecretVolumeSource{
+                                        SecretName: fmt.Sprintf("%s-ca", c.KCP.Name),
+                                        Items: []corev1.KeyToPath{
+                                            {
+                                                Key:  "tls.crt",
+                                                Path: "server-ca.crt",
+                                            },
+                                            {
+                                                Key:  "tls.key",
+                                                Path: "server-ca.key",
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                            {
+                                Name: "client-ca",
+                                VolumeSource: corev1.VolumeSource{
+                                    Secret: &corev1.SecretVolumeSource{
+                                        SecretName: fmt.Sprintf("%s-cca", c.KCP.Name),
+                                        Items: []corev1.KeyToPath{
+                                            {
+                                                Key:  "tls.crt",
+                                                Path: "client-ca.crt",
+                                            },
+                                            {
+                                                Key:  "tls.key",
+                                                Path: "client-ca.key",
+                                            },
+                                        },
                                     },
                                 },
                             },
@@ -561,3 +615,4 @@ func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, c
         TLSRoute: *tlsRoute,
     }, nil
 }
+

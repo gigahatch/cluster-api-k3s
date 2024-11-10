@@ -146,15 +146,14 @@ func (r *KThreesControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.
 	if !kcp.ObjectMeta.DeletionTimestamp.IsZero() {
 		// Handle deletion reconciliation loop.
         if kcp.Spec.AgentlessConfig != nil {
-            return r.deleteAgentless(ctx, cluster, kcp)
+            res, err = r.deleteAgentless(ctx, cluster, kcp)
         } else {
             res, err = r.reconcileDelete(ctx, cluster, kcp)
         }
 	} else {
 		// Handle normal reconciliation loop.
-
         if kcp.Spec.AgentlessConfig != nil {
-            return r.reconcileAgentless(ctx, cluster, kcp)
+            res, err = r.reconcileAgentless(ctx, cluster, kcp)
         } else {
             res, err = r.reconcile(ctx, cluster, kcp)
         }
@@ -660,7 +659,6 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 		logger.Error(err, "failed to reconcile Kubeconfig")
 		return result, err
 	}
-
     
 	controlPlane, err := k3s.NewControlPlane(ctx, r.Client, cluster, kcp, nil)
 	if err != nil {
@@ -730,7 +728,7 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 		// Create new Machine w/ init
 		logger.Info("Initializing agentless control plane", "Desired", desiredReplicas, "Existing", numPods)
 		conditions.MarkFalse(controlPlane.KCP, controlplanev1.AvailableCondition, controlplanev1.WaitingForKthreesServerReason, clusterv1.ConditionSeverityInfo, "")
-		return r.initializeControlPlane(ctx, cluster, kcp, controlPlane)
+		return r.initializeAgentlessControlPlane(ctx, cluster, kcp, controlPlane, remoteClient, certificates)
 	// We are scaling up
 	// We are scaling down
     // todo: agentless handle scaling

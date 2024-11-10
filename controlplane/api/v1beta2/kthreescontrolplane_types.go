@@ -88,7 +88,7 @@ type KThreesControlPlaneSpec struct {
 
     // Agentless configuration for the control plane
     // +optional
-    AgentlessConfig *KThreesAgentlessConfig `json:"agentless,omitempty"`
+    AgentlessConfig *KThreesAgentlessConfig `json:"agentlessConfig,omitempty"`
 }
 
 // KThreesAgentlessConfig contains configuration for deploying the control plane in an agentless mode
