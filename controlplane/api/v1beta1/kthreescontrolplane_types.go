@@ -97,6 +97,16 @@ type KThreesControlPlaneSpec struct {
 	// The RemediationStrategy that controls how control plane machine remediation happens.
 	// +optional
 	RemediationStrategy *RemediationStrategy `json:"remediationStrategy,omitempty"`
+
+    // Agentless configuration for the control plane
+    // +optional
+    AgentlessConfig *KThreesAgentlessConfig `json:"agentlessConfig,omitempty"`
+}
+
+// KThreesAgentlessConfig contains configuration for deploying the control plane in an agentless mode
+type KThreesAgentlessConfig struct {
+    // KubeconfigSecret is a reference to a secret containing the kubeconfig for the cluster where the control plane should be deployed
+    ControlPlaneClusterName string `json:"controlPlaneClusterName"`
 }
 
 // MachineTemplate contains information about how machines should be shaped

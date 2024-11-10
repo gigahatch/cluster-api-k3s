@@ -72,6 +72,17 @@ spec:
           spec:
             description: KThreesControlPlaneSpec defines the desired state of KThreesControlPlane.
             properties:
+              agentlessConfig:
+                description: Agentless configuration for the control plane
+                properties:
+                  controlPlaneClusterName:
+                    description: KubeconfigSecret is a reference to a secret containing
+                      the kubeconfig for the cluster where the control plane should
+                      be deployed
+                    type: string
+                required:
+                - controlPlaneClusterName
+                type: object
               infrastructureTemplate:
                 description: |-
                   InfrastructureTemplate is a required reference to a custom resource

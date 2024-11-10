@@ -44,6 +44,9 @@ var _ admission.CustomValidator = &KThreesControlPlane{}
 
 // ValidateCreate will do any extra validation when creating a KThreesControlPlane.
 func (in *KThreesControlPlane) ValidateCreate(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+    logger := ctrl.Log.WithName("webhooks").WithName("KThreesControlPlane")
+    logger.Info("ValidateCreate", "name", in.Name)
+    logger.Info("ValidateCreate", "isAgentless", in.Spec.AgentlessConfig != nil)
 	return []string{}, nil
 }
 
