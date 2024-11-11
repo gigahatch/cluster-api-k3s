@@ -45,6 +45,10 @@ import (
 	bootstrapv1 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta2"
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
 	"github.com/k3s-io/cluster-api-k3s/pkg/machinefilters"
+
+	rest "k8s.io/client-go/rest"
+    clientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
+    "strings"
 )
 
 var (
@@ -442,7 +446,7 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
                         Containers: []corev1.Container{
                             {
                                 Name:  "k3s",
-                                Image: fmt.Sprintf("rancher/k3s:%s", c.KCP.Spec.Version),
+                                Image: fmt.Sprintf("rancher/k3s:%s", strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
                                 Args: []string{
                                     "server",
                                     "--disable-agent",
@@ -484,7 +488,7 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
                                 Name: "server-ca",
                                 VolumeSource: corev1.VolumeSource{
                                     Secret: &corev1.SecretVolumeSource{
-                                        SecretName: fmt.Sprintf("%s-ca", c.KCP.Name),
+                                        SecretName: fmt.Sprintf("%s-ca", c.Cluster.Name),
                                         Items: []corev1.KeyToPath{
                                             {
                                                 Key:  "tls.crt",
@@ -502,7 +506,7 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
                                 Name: "client-ca",
                                 VolumeSource: corev1.VolumeSource{
                                     Secret: &corev1.SecretVolumeSource{
-                                        SecretName: fmt.Sprintf("%s-cca", c.KCP.Name),
+                                        SecretName: fmt.Sprintf("%s-cca", c.Cluster.Name),
                                         Items: []corev1.KeyToPath{
                                             {
                                                 Key:  "tls.crt",
@@ -568,7 +572,7 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 }
 
 // GetAgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
-func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, client client.Client) (*ControlPlaneAgentlessDeployment, error) {
+func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, client client.Client, restConfig *rest.Config) (*ControlPlaneAgentlessDeployment, error) {
     if c.KCP.Spec.AgentlessConfig == nil {
         return nil, errors.New("control plane is not agentless")
     }
@@ -579,7 +583,7 @@ func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, c
         Name:      c.KCP.Name,
     }
     if err := client.Get(ctx, deploymentKey, deployment); err != nil {
-        if !apierrors.IsNotFound(err) {
+        if apierrors.IsNotFound(err) {
             return nil, nil
         }
         return nil, err
@@ -591,19 +595,22 @@ func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, c
         Name:      c.KCP.Name,
     }
     if err := client.Get(ctx, serviceKey, service); err != nil {
-        if !apierrors.IsNotFound(err) {
+        if apierrors.IsNotFound(err) {
             return nil, nil
         }
         return nil, err
     }
 
-    tlsRoute := &gatewayv1alpha2.TLSRoute{}
-    tlsRouteKey := types.NamespacedName{
-        Namespace: c.KCP.Namespace,
-        Name:      c.KCP.Name,
+    // get client for gateway api
+    gatewayClients,err := clientset.NewForConfig(restConfig)
+    if (err != nil) {
+        return nil, err
     }
-    if err := client.Get(ctx, tlsRouteKey, tlsRoute); err != nil {
-        if !apierrors.IsNotFound(err) {
+    gatewayv1alpha2Client := gatewayClients.GatewayV1alpha2()
+
+    tlsRoute,err := gatewayv1alpha2Client.TLSRoutes(c.KCP.Namespace).Get(ctx, c.KCP.Name, metav1.GetOptions{})
+    if err != nil {
+        if apierrors.IsNotFound(err) {
             return nil, nil
         }
         return nil, err

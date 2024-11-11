@@ -45,6 +45,9 @@ import (
 	k3s "github.com/k3s-io/cluster-api-k3s/pkg/k3s"
 	"github.com/k3s-io/cluster-api-k3s/pkg/util/ssa"
 	"github.com/k3s-io/cluster-api-k3s/pkg/secret"
+
+	rest "k8s.io/client-go/rest"
+    clientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 var ErrPreConditionFailed = errors.New("precondition check failed")
@@ -78,15 +81,16 @@ func (r *KThreesControlPlaneReconciler) initializeControlPlane(ctx context.Conte
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *KThreesControlPlaneReconciler) initializeAgentlessControlPlane(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, remoteClient client.Client, certificates secret.Certificates) (ctrl.Result, error) {
+func (r *KThreesControlPlaneReconciler) initializeAgentlessControlPlane(ctx context.Context, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, remoteClient client.Client, restConfig *rest.Config, certificates secret.Certificates) (ctrl.Result, error) {
     logger := ctrl.LoggerFrom(ctx)
+    cluster := controlPlane.Cluster
 
 	token, err := token.Lookup(ctx, r.Client, client.ObjectKeyFromObject(cluster))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
     // Create the control plane pod
-    if err := r.createControlPlaneDeployment(ctx, remoteClient, cluster, kcp, controlPlane, token, certificates); err != nil {
+    if err := r.createControlPlaneDeployment(ctx, remoteClient, restConfig, kcp, controlPlane, token, certificates); err != nil {
         logger.Error(err, "Failed to create control plane deployment")
         r.recorder.Eventf(kcp, corev1.EventTypeWarning, "FailedScaleUp", "Failed to create control plane pod for cluster %s/%s control plane: %v", cluster.Namespace, cluster.Name, err)
         return ctrl.Result{}, err
@@ -117,8 +121,9 @@ func (r *KThreesControlPlaneReconciler) scaleUpControlPlane(ctx context.Context,
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context.Context, remoteClient client.Client, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, token *string, certificates secret.Certificates) error {
+func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context.Context, remoteClient client.Client, restConfig *rest.Config, kcp *controlplanev1.KThreesControlPlane, controlPlane *k3s.ControlPlane, token *string, certificates secret.Certificates) error {
     logger := ctrl.LoggerFrom(ctx)
+    cluster := controlPlane.Cluster
 
     // Create the control plane deployment
     deployment, err := controlPlane.CreateAgentlessControlPlaneDeployment(token)
@@ -127,20 +132,15 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
     }
 
     // Create the control plane deployment
-    if err := remoteClient.Create(ctx, &deployment.Deployment); err != nil {
+    if err := remoteClient.Create(ctx, &deployment.Deployment); !apierrors.IsAlreadyExists(err) {
         logger.Error(err, "Failed to create control plane pod")
         return errors.Wrap(err, "failed to create control plane pod")
     }
 
     // Create the control plane service
-    if err := remoteClient.Create(ctx, &deployment.Service); err != nil {
+    if err := remoteClient.Create(ctx, &deployment.Service); !apierrors.IsAlreadyExists(err) {
         logger.Error(err, "Failed to create control plane service")
         return errors.Wrap(err, "failed to create control plane service")
-    }
-
-    if err := remoteClient.Create(ctx, &deployment.TLSRoute); err != nil {
-        logger.Error(err, "Failed to create control plane tls route")
-        return errors.Wrap(err, "failed to create control plane tls route")
     }
 
     if err := certificates.EnsureAllExist() ; err != nil {
@@ -149,7 +149,9 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
     }
 
     for _, certficate := range certificates {
-        secret := certficate.AsSecret(cluster.GetClassKey(), metav1.OwnerReference{})
+        secret := certficate.AsSecret(client.ObjectKeyFromObject(cluster), metav1.OwnerReference{})
+        logger.Info("Creating secret", "secret", secret.Name)
+        secret.Namespace = deployment.TLSRoute.Namespace
 
         if err := remoteClient.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
             logger.Error(err, "Failed to delete secret")
@@ -160,6 +162,19 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
             logger.Error(err, "Failed to create secret")
             return errors.Wrap(err, "failed to create secret")
         }
+    }
+
+
+    // get client for gateway api
+    gatewayClients,err := clientset.NewForConfig(restConfig)
+    if (err != nil) {
+        return err
+    }
+    gatewayv1alpha2Client := gatewayClients.GatewayV1alpha2()
+    _, err = gatewayv1alpha2Client.TLSRoutes(deployment.TLSRoute.Namespace).Create(ctx, &deployment.TLSRoute, metav1.CreateOptions{})
+    if !apierrors.IsAlreadyExists(err) {
+        logger.Error(err, "Failed to create control plane tls route")
+        return errors.Wrap(err, "failed to create control plane tls route")
     }
 
     return nil

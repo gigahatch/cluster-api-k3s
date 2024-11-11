@@ -368,6 +368,11 @@ func (r *KThreesControlPlaneReconciler) ClusterToKThreesControlPlane(ctx context
 // updateStatus is called after every reconcilitation loop in a defer statement to always make sure we have the
 // resource status subresourcs up-to-date.
 func (r *KThreesControlPlaneReconciler) updateStatus(ctx context.Context, kcp *controlplanev1.KThreesControlPlane, cluster *clusterv1.Cluster) error {
+    if kcp.Spec.AgentlessConfig != nil {
+        // todo update status for agentless
+        return nil
+    }
+
 	selector := collections.ControlPlaneSelectorForCluster(cluster.Name)
 	// Copy label selector to its status counterpart in string format.
 	// This is necessary for CRDs including scale subresources.
@@ -673,13 +678,14 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
         return ctrl.Result{}, err
     }
 
+    restConfig, err := remote.RESTConfig(ctx, "", r.Client, controlPlaneCluster)
     remoteClient, err := remote.NewClusterClient(ctx, "", r.Client, controlPlaneCluster)
     if err != nil {
         logger.Error(err, "Failed to create client to control plane cluster")
         return ctrl.Result{}, err
     }
 
-    deployment, err := controlPlane.GetAgentlessControlPlaneDeployment(ctx, remoteClient)
+    deployment, err := controlPlane.GetAgentlessControlPlaneDeployment(ctx, remoteClient, restConfig)
     if err != nil {
         logger.Error(err, "Failed to get agentless control plane deployment")
         return ctrl.Result{}, err
@@ -728,7 +734,7 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 		// Create new Machine w/ init
 		logger.Info("Initializing agentless control plane", "Desired", desiredReplicas, "Existing", numPods)
 		conditions.MarkFalse(controlPlane.KCP, controlplanev1.AvailableCondition, controlplanev1.WaitingForKthreesServerReason, clusterv1.ConditionSeverityInfo, "")
-		return r.initializeAgentlessControlPlane(ctx, cluster, kcp, controlPlane, remoteClient, certificates)
+		return r.initializeAgentlessControlPlane(ctx, kcp, controlPlane, remoteClient, restConfig, certificates)
 	// We are scaling up
 	// We are scaling down
     // todo: agentless handle scaling
