@@ -152,6 +152,8 @@ func (r *KThreesControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.
         }
 	} else {
 		// Handle normal reconciliation loop.
+		logger.Info("Reconciling KThreesControlPlane", "name", kcp.ObjectMeta.Name)
+		logger.Info("AgentlessConfig", "config", kcp.Spec.AgentlessConfig)
         if kcp.Spec.AgentlessConfig != nil {
             res, err = r.reconcileAgentless(ctx, cluster, kcp)
         } else {
@@ -369,8 +371,7 @@ func (r *KThreesControlPlaneReconciler) ClusterToKThreesControlPlane(ctx context
 // resource status subresourcs up-to-date.
 func (r *KThreesControlPlaneReconciler) updateStatus(ctx context.Context, kcp *controlplanev1.KThreesControlPlane, cluster *clusterv1.Cluster) error {
     if kcp.Spec.AgentlessConfig != nil {
-        // todo update status for agentless
-        return nil
+        return r.updateStatusAgentless(ctx, kcp, cluster)
     }
 
 	selector := collections.ControlPlaneSelectorForCluster(cluster.Name)
@@ -483,6 +484,10 @@ func (r *KThreesControlPlaneReconciler) updateStatus(ctx context.Context, kcp *c
 	return nil
 }
 
+func (r *KThreesControlPlaneReconciler) updateStatusAgentless(ctx context.Context, kcp *controlplanev1.KThreesControlPlane, cluster *clusterv1.Cluster) error {
+	// todo 
+	return nil
+}
 // reconcile handles KThreesControlPlane reconciliation.
 func (r *KThreesControlPlaneReconciler) reconcile(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane) (ctrl.Result, error) {
 	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
@@ -703,6 +708,9 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 
         if readyPods == desiredReplicas {
             conditions.MarkTrue(kcp, controlplanev1.AvailableCondition)
+			kcp.Status.Initialized = true
+			kcp.Status.Version = &kcp.Spec.Version
+			cluster.Status.ControlPlaneReady = true
         }
     }
 

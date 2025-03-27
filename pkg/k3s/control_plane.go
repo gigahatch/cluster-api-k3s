@@ -450,8 +450,10 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
                                 Args: []string{
                                     "server",
                                     "--disable-agent",
+									"--egress-selector-mode",
+									"cluster",
                                     "--tls-san",
-                                    c.Cluster.Spec.ControlPlaneEndpoint.Host,                  
+                                    c.Cluster.Spec.ControlPlaneEndpoint.Host,
                                 },
                                 Env: []corev1.EnvVar{
                                     {
@@ -473,53 +475,101 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
                                 },
                                 VolumeMounts: []corev1.VolumeMount{
                                     {
-                                        Name: "server-ca",
+                                        Name: "certificates-dst",
                                         MountPath: "/var/lib/rancher/k3s/server/tls",
-                                    },
-                                    {
-                                        Name: "client-ca",
-                                        MountPath: "/var/lib/rancher/k3s/client/tls",
                                     },
                                 },
                             },
                         },
+						InitContainers: []corev1.Container{
+							// init container to copy the cetificates from .tls-certs to tls folder
+							{
+								Name:  "copy-certs",
+								Image: "busybox:1.28",
+								Command: []string{
+									"sh",
+									"-c",
+									"cp -r /var/lib/rancher/k3s/server/.tls-certs /var/lib/rancher/k3s/server/tls",
+								},
+                                VolumeMounts: []corev1.VolumeMount{
+                                    {
+                                        Name: "certificates",
+                                        MountPath: "/var/lib/rancher/k3s/server/.tls-certs",
+                                    },
+									{
+										Name: "certificates-dst",
+										MountPath: "/var/lib/rancher/k3s/server/tls",
+									},
+                                },
+							},
+						},
                         Volumes: []corev1.Volume{
-                            {
-                                Name: "server-ca",
-                                VolumeSource: corev1.VolumeSource{
-                                    Secret: &corev1.SecretVolumeSource{
-                                        SecretName: fmt.Sprintf("%s-ca", c.Cluster.Name),
-                                        Items: []corev1.KeyToPath{
-                                            {
-                                                Key:  "tls.crt",
-                                                Path: "server-ca.crt",
-                                            },
-                                            {
-                                                Key:  "tls.key",
-                                                Path: "server-ca.key",
-                                            },
-                                        },
-                                    },
-                                },
-                            },
-                            {
-                                Name: "client-ca",
-                                VolumeSource: corev1.VolumeSource{
-                                    Secret: &corev1.SecretVolumeSource{
-                                        SecretName: fmt.Sprintf("%s-cca", c.Cluster.Name),
-                                        Items: []corev1.KeyToPath{
-                                            {
-                                                Key:  "tls.crt",
-                                                Path: "client-ca.crt",
-                                            },
-                                            {
-                                                Key:  "tls.key",
-                                                Path: "client-ca.key",
-                                            },
-                                        },
-                                    },
-                                },
-                            },
+							{
+								Name: "certificates-dst",
+								VolumeSource: corev1.VolumeSource{
+									EmptyDir: &corev1.EmptyDirVolumeSource{},
+								},
+							},
+							{
+								Name: "certificates",
+								VolumeSource: corev1.VolumeSource{
+									Projected: &corev1.ProjectedVolumeSource{
+										Sources: []corev1.VolumeProjection{
+											{
+												Secret: &corev1.SecretProjection{
+													LocalObjectReference: corev1.LocalObjectReference{
+														Name: fmt.Sprintf("%s-ca", c.Cluster.Name),
+													},
+													Items: []corev1.KeyToPath{
+														{
+															Key:  "tls.crt",
+															Path: "server-ca.crt",
+														},
+														{
+															Key:  "tls.key",
+															Path: "server-ca.key",
+														},
+													},
+												},
+											},
+											{
+												Secret: &corev1.SecretProjection{
+													LocalObjectReference: corev1.LocalObjectReference{
+														Name: fmt.Sprintf("%s-cca", c.Cluster.Name),
+													},
+													Items: []corev1.KeyToPath{
+														{
+															Key:  "tls.crt",
+															Path: "client-ca.crt",
+														},
+														{
+															Key:  "tls.key",
+															Path: "client-ca.key",
+														},
+													},
+												},
+											},
+											{
+												Secret: &corev1.SecretProjection{
+													LocalObjectReference: corev1.LocalObjectReference{
+														Name: fmt.Sprintf("%s-etcd", c.Cluster.Name),
+													},
+													Items: []corev1.KeyToPath{
+														{
+															Key:  "tls.crt",
+															Path: "etcd/server-ca.crt",
+														},
+														{
+															Key:  "tls.key",
+															Path: "etcd/server-ca.key",
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
                         },
                     },
 
