@@ -48,7 +48,7 @@ import (
 
 	rest "k8s.io/client-go/rest"
     clientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
-    "strings"
+    //"strings"
 )
 
 var (
@@ -454,15 +454,13 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 								"--debug",
 								"--disable-agent",
 								"--egress-selector-mode",
-								"pod",
+								"cluster",
 								"--node-name",
 								c.Cluster.Spec.ControlPlaneEndpoint.Host,
 								"--tls-san",
 								c.Cluster.Spec.ControlPlaneEndpoint.Host,
 								"--node-external-dns",
 								c.Cluster.Spec.ControlPlaneEndpoint.Host,
-								"--node-external-ip",
-								"49.12.21.53",
 								"--disable",
 								"servicelb",
 								"--disable",
@@ -471,19 +469,13 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 								"local-storage",
 								"--disable",
 								"traefik",
-								"--cluster-cidr=10.42.0.0/16",
-								"--service-cidr=10.43.0.0/16",
-								"--flannel-external-ip",
 								"--flannel-backend",
 								"wireguard-native",
-								"--kube-apiserver-arg",
-								"--advertise-address=49.12.21.53",
+								"--flannel-external-ip",
+								"--cluster-cidr=10.42.0.0/16",
+								"--service-cidr=10.43.0.0/16",
 								"--kube-apiserver-arg",
 								fmt.Sprintf("--external-hostname=%s", c.Cluster.Spec.ControlPlaneEndpoint.Host),
-								"--kube-apiserver-arg",
-								"--kubelet-preferred-address-types=ExternalDNS",
-								"--kube-apiserver-arg",
-								"--enable-aggregator-routing=false",
 							},
 							Env: []corev1.EnvVar{
 								{
