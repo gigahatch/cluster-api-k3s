@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -137,7 +138,20 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
         return errors.Wrap(err, "failed to create control plane pod")
     }
 
+	if err := remoteClient.Get(ctx, client.ObjectKeyFromObject(&deployment.Deployment), &deployment.Deployment); err != nil {
+		logger.Error(err, "Failed to get control plane pod")
+		return errors.Wrap(err, "failed to get control plane pod")
+	}
+	deploymentGvk := schema.GroupVersionKind{
+		Group: "apps",
+		Version: "v1",
+		Kind: "Deployment",
+	}
+
     // Create the control plane service
+	deployment.Service.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(&deployment.Deployment, deploymentGvk),
+	}
     if err := remoteClient.Create(ctx, &deployment.Service); !apierrors.IsAlreadyExists(err) {
         logger.Error(err, "Failed to create control plane service")
         return errors.Wrap(err, "failed to create control plane service")
@@ -152,6 +166,9 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
         secret := certficate.AsSecret(client.ObjectKeyFromObject(cluster), metav1.OwnerReference{})
         logger.Info("Creating secret", "secret", secret.Name)
         secret.Namespace = deployment.TLSRoute.Namespace
+		secret.OwnerReferences = []metav1.OwnerReference{
+			*metav1.NewControllerRef(&deployment.Deployment, deploymentGvk),
+		}
 
         if err := remoteClient.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
             logger.Error(err, "Failed to delete secret")
@@ -171,6 +188,10 @@ func (r *KThreesControlPlaneReconciler) createControlPlaneDeployment(ctx context
         return err
     }
     gatewayv1alpha2Client := gatewayClients.GatewayV1alpha2()
+
+	deployment.TLSRoute.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(&deployment.Deployment, deploymentGvk),
+	}
     _, err = gatewayv1alpha2Client.TLSRoutes(deployment.TLSRoute.Namespace).Create(ctx, &deployment.TLSRoute, metav1.CreateOptions{})
     if !apierrors.IsAlreadyExists(err) {
         logger.Error(err, "Failed to create control plane tls route")

@@ -424,145 +424,174 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
     controlPlanePort := gatewayv1.PortNumber(6443)
     controlPlaneNamespace := gatewayv1.Namespace(c.KCP.Namespace)
 
-    return &ControlPlaneAgentlessDeployment{
-        Deployment: appsv1.Deployment{
-            ObjectMeta: metav1.ObjectMeta{
-                Namespace: c.KCP.Namespace,
-                Name:      c.KCP.Name,
-            },
-            Spec: appsv1.DeploymentSpec{
-                Selector: &metav1.LabelSelector{
-                    MatchLabels: map[string]string{
-                        clusterv1.ClusterNameLabel: c.Cluster.Name,
-                    },
-                },
-                Template: corev1.PodTemplateSpec{
-                    ObjectMeta: metav1.ObjectMeta{
-                        Labels: map[string]string{
-                            clusterv1.ClusterNameLabel: c.Cluster.Name,
-                        },
-                    },
-                    Spec: corev1.PodSpec{
-                        Containers: []corev1.Container{
-                            {
-                                Name:  "k3s",
-                                Image: fmt.Sprintf("rancher/k3s:%s", strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
-                                Args: []string{
-                                    "server",
-                                    "--disable-agent",
-									"--egress-selector-mode",
-									"cluster",
-                                    "--tls-san",
-                                    c.Cluster.Spec.ControlPlaneEndpoint.Host,
-                                },
-                                Env: []corev1.EnvVar{
-                                    {
-                                        Name: "K3S_TOKEN",
-                                        Value: *token,
-                                    },
-                                },
-                                Ports: []corev1.ContainerPort{
-                                    {
-                                        ContainerPort: 6443,
-                                        Name: "kubernetes",
-                                    },
-                                },
-                                Resources: corev1.ResourceRequirements{
-                                    Limits: corev1.ResourceList{
-                                        corev1.ResourceCPU: resource.MustParse("500m"),
-                                        corev1.ResourceMemory: resource.MustParse("100Mi"),
-                                    },
-                                },
-                                VolumeMounts: []corev1.VolumeMount{
-                                    {
-                                        Name: "certificates-dst",
-                                        MountPath: "/var/lib/rancher/k3s/server/tls",
-                                    },
-                                },
-                            },
-                        },
-						InitContainers: []corev1.Container{
-							// init container to copy the cetificates from .tls-certs to tls folder
-							{
-								Name:  "copy-certs",
-								Image: "busybox:1.28",
-								Command: []string{
-									"sh",
-									"-c",
-									"cp -r /var/lib/rancher/k3s/server/.tls-certs /var/lib/rancher/k3s/server/tls",
+	traefikNamespace := gatewayv1.Namespace("traefik-v2")
+	kubernetesSection := gatewayv1.SectionName("kubernetes")
+
+	deployment := appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: c.KCP.Namespace,
+			Name:      c.KCP.Name,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					clusterv1.ClusterNameLabel: c.Cluster.Name,
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						clusterv1.ClusterNameLabel: c.Cluster.Name,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "k3s",
+							Image: fmt.Sprintf("roastpiece/k3s:%s", "v1.31.7-k3s1-build.1"),//strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
+							Args: []string{
+								"server",
+								"--debug",
+								"--disable-agent",
+								"--egress-selector-mode",
+								"pod",
+								"--node-name",
+								c.Cluster.Spec.ControlPlaneEndpoint.Host,
+								"--tls-san",
+								c.Cluster.Spec.ControlPlaneEndpoint.Host,
+								"--node-external-dns",
+								c.Cluster.Spec.ControlPlaneEndpoint.Host,
+								"--node-external-ip",
+								"49.12.21.53",
+								"--disable",
+								"servicelb",
+								"--disable",
+								"metrics-server",
+								"--disable",
+								"local-storage",
+								"--disable",
+								"traefik",
+								"--cluster-cidr=10.42.0.0/16",
+								"--service-cidr=10.43.0.0/16",
+								"--flannel-external-ip",
+								"--flannel-backend",
+								"wireguard-native",
+								"--kube-apiserver-arg",
+								"--advertise-address=49.12.21.53",
+								"--kube-apiserver-arg",
+								fmt.Sprintf("--external-hostname=%s", c.Cluster.Spec.ControlPlaneEndpoint.Host),
+								"--kube-apiserver-arg",
+								"--kubelet-preferred-address-types=ExternalDNS",
+								"--kube-apiserver-arg",
+								"--enable-aggregator-routing=false",
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "K3S_TOKEN",
+									Value: *token,
 								},
-                                VolumeMounts: []corev1.VolumeMount{
-                                    {
-                                        Name: "certificates",
-                                        MountPath: "/var/lib/rancher/k3s/server/.tls-certs",
-                                    },
-									{
-										Name: "certificates-dst",
-										MountPath: "/var/lib/rancher/k3s/server/tls",
-									},
-                                },
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									ContainerPort: 6443,
+									Name: "kubernetes",
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU: resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("1000Mi"),
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name: "certificates-dst",
+									MountPath: "/var/lib/rancher/k3s/server/tls",
+								},
 							},
 						},
-                        Volumes: []corev1.Volume{
-							{
-								Name: "certificates-dst",
-								VolumeSource: corev1.VolumeSource{
-									EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+					InitContainers: []corev1.Container{
+						// init container to copy the cetificates from .tls-certs to tls folder
+						{
+							Name:  "copy-certs",
+							Image: "busybox:1.28",
+							Command: []string{
+								"sh",
+								"-c",
+								"cp -Lr /var/lib/rancher/k3s/server/.tls-certs/* /var/lib/rancher/k3s/server/tls/",
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name: "certificates",
+									MountPath: "/var/lib/rancher/k3s/server/.tls-certs",
+								},
+								{
+									Name: "certificates-dst",
+									MountPath: "/var/lib/rancher/k3s/server/tls",
 								},
 							},
-							{
-								Name: "certificates",
-								VolumeSource: corev1.VolumeSource{
-									Projected: &corev1.ProjectedVolumeSource{
-										Sources: []corev1.VolumeProjection{
-											{
-												Secret: &corev1.SecretProjection{
-													LocalObjectReference: corev1.LocalObjectReference{
-														Name: fmt.Sprintf("%s-ca", c.Cluster.Name),
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "certificates-dst",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "certificates",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											Secret: &corev1.SecretProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: fmt.Sprintf("%s-ca", c.Cluster.Name),
+												},
+												Items: []corev1.KeyToPath{
+													{
+														Key:  "tls.crt",
+														Path: "server-ca.crt",
 													},
-													Items: []corev1.KeyToPath{
-														{
-															Key:  "tls.crt",
-															Path: "server-ca.crt",
-														},
-														{
-															Key:  "tls.key",
-															Path: "server-ca.key",
-														},
+													{
+														Key:  "tls.key",
+														Path: "server-ca.key",
 													},
 												},
 											},
-											{
-												Secret: &corev1.SecretProjection{
-													LocalObjectReference: corev1.LocalObjectReference{
-														Name: fmt.Sprintf("%s-cca", c.Cluster.Name),
+										},
+										{
+											Secret: &corev1.SecretProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: fmt.Sprintf("%s-cca", c.Cluster.Name),
+												},
+												Items: []corev1.KeyToPath{
+													{
+														Key:  "tls.crt",
+														Path: "client-ca.crt",
 													},
-													Items: []corev1.KeyToPath{
-														{
-															Key:  "tls.crt",
-															Path: "client-ca.crt",
-														},
-														{
-															Key:  "tls.key",
-															Path: "client-ca.key",
-														},
+													{
+														Key:  "tls.key",
+														Path: "client-ca.key",
 													},
 												},
 											},
-											{
-												Secret: &corev1.SecretProjection{
-													LocalObjectReference: corev1.LocalObjectReference{
-														Name: fmt.Sprintf("%s-etcd", c.Cluster.Name),
+										},
+										{
+											Secret: &corev1.SecretProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: fmt.Sprintf("%s-etcd", c.Cluster.Name),
+												},
+												Items: []corev1.KeyToPath{
+													{
+														Key:  "tls.crt",
+														Path: "etcd/server-ca.crt",
 													},
-													Items: []corev1.KeyToPath{
-														{
-															Key:  "tls.crt",
-															Path: "etcd/server-ca.crt",
-														},
-														{
-															Key:  "tls.key",
-															Path: "etcd/server-ca.key",
-														},
+													{
+														Key:  "tls.key",
+														Path: "etcd/server-ca.key",
 													},
 												},
 											},
@@ -570,53 +599,72 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 									},
 								},
 							},
-                        },
-                    },
+						},
+					},
+				},
 
-                },
+			},
 
-            },
-        },
-        Service: corev1.Service{
-            ObjectMeta: metav1.ObjectMeta{
-                Namespace: c.KCP.Namespace,
-                Name:      c.KCP.Name,
-            },
-            Spec: corev1.ServiceSpec{
-                Selector: map[string]string{
-                    clusterv1.ClusterNameLabel: c.Cluster.Name,
-                },
-                Ports: []corev1.ServicePort{
-                    {
-                        Name: "kubernetes",
-                        TargetPort: intstr.FromString("kubernetes"),
-                        Port: 6443,
-                    },
-                },
-            },
-        },
-        TLSRoute: gatewayv1alpha2.TLSRoute{
-            ObjectMeta: metav1.ObjectMeta{
-                Namespace: c.KCP.Namespace,
-                Name:      c.KCP.Name,
-            },
-            Spec: gatewayv1alpha2.TLSRouteSpec{
-                Rules: []gatewayv1alpha2.TLSRouteRule{
-                    {
-                        BackendRefs: []gatewayv1.BackendRef{
-                            {
-                                BackendObjectReference: gatewayv1.BackendObjectReference{
-                                    Name: gatewayv1.ObjectName(c.KCP.Name),
-                                    Namespace: &controlPlaneNamespace,
-                                    Port: &controlPlanePort,
-                                },
-                            },
-                        },
-                    },
-                },
-            },
+		},
+	}
 
-        },
+	service := corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: c.KCP.Namespace,
+			Name:      c.KCP.Name,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				clusterv1.ClusterNameLabel: c.Cluster.Name,
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name: "kubernetes",
+					TargetPort: intstr.FromString("kubernetes"),
+					Port: 6443,
+				},
+			},
+		},
+	}
+
+	tlsRoute := gatewayv1alpha2.TLSRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: c.KCP.Namespace,
+			Name:      c.KCP.Name,
+		},
+		Spec: gatewayv1alpha2.TLSRouteSpec{
+			Hostnames: []gatewayv1alpha2.Hostname{
+				gatewayv1alpha2.Hostname(c.Cluster.Spec.ControlPlaneEndpoint.Host),
+			},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Namespace: &traefikNamespace,
+						Name: "traefik-gateway",
+						SectionName: &kubernetesSection,
+					},
+				},
+			},
+			Rules: []gatewayv1alpha2.TLSRouteRule{
+				{
+					BackendRefs: []gatewayv1.BackendRef{
+						{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: gatewayv1.ObjectName(c.KCP.Name),
+								Namespace: &controlPlaneNamespace,
+								Port: &controlPlanePort,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+    return &ControlPlaneAgentlessDeployment{
+        Deployment: deployment,
+        Service: service,
+        TLSRoute: tlsRoute,
     },
     nil
 }
@@ -671,5 +719,23 @@ func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, c
         Service: *service,
         TLSRoute: *tlsRoute,
     }, nil
+}
+
+func (c *ControlPlane) DeleteAgentlessControlPlaneDeployment(ctx context.Context, client client.Client, restConfig *rest.Config) (bool, error) {
+    deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: c.KCP.Namespace,
+			Name:      c.KCP.Name,
+		},
+	}
+
+	if err := client.Delete(ctx, deployment); err != nil {
+        if apierrors.IsNotFound(err) {
+			return true, nil
+        }
+		return false, err
+	}
+
+	return false, nil
 }
 

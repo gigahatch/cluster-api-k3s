@@ -270,11 +270,41 @@ func (r *KThreesControlPlaneReconciler) deleteAgentless(ctx context.Context, clu
 	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
 	logger.Info("Reconcile KThreesControlPlane agentless deletion")
 
-    // todo: delete the remote deployment here
-    // for now just remove the finalizer 
-	controllerutil.RemoveFinalizer(kcp, controlplanev1.KThreesControlPlaneFinalizer)
 
-    return ctrl.Result{}, nil
+	controlPlane, err := k3s.NewControlPlane(ctx, r.Client, cluster, kcp, nil)
+	if err != nil {
+		logger.Error(err, "failed to initialize control plane")
+		return reconcile.Result{}, err
+	}
+
+    // get remote client for control plane cluster
+    controlPlaneCluster, err := controlPlane.GetControlPlaneClusterObjectKey()
+    if (err != nil) {
+        logger.Error(err, "Failed to get control plane cluster object key")
+        return ctrl.Result{}, err
+    }
+
+    restConfig, err := remote.RESTConfig(ctx, "", r.Client, controlPlaneCluster)
+    remoteClient, err := remote.NewClusterClient(ctx, "", r.Client, controlPlaneCluster)
+    if err != nil {
+        logger.Error(err, "Failed to create client to control plane cluster")
+        return ctrl.Result{}, err
+    }
+
+    isDeleted, err := controlPlane.DeleteAgentlessControlPlaneDeployment(ctx, remoteClient, restConfig)
+	if err != nil {
+		logger.Error(err, "Failed to delete agentless control plane deployment")
+		return ctrl.Result{}, err
+	}
+	if (isDeleted) {
+		logger.Info("Agentless control plane deployment deleted")
+		controllerutil.RemoveFinalizer(kcp, controlplanev1.KThreesControlPlaneFinalizer)
+		return reconcile.Result{}, nil
+	}
+
+	logger.Info("Waiting for agentless control plane deployment to be deleted")
+	conditions.MarkFalse(kcp, controlplanev1.ResizedCondition, clusterv1.DeletingReason, clusterv1.ConditionSeverityInfo, "")
+	return ctrl.Result{RequeueAfter: deleteRequeueAfter}, nil
 }
 
 func patchKThreesControlPlane(ctx context.Context, patchHelper *patch.Helper, kcp *controlplanev1.KThreesControlPlane) error {
