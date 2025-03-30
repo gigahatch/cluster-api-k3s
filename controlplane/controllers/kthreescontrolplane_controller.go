@@ -741,6 +741,8 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 			kcp.Status.Initialized = true
 			kcp.Status.Version = &kcp.Spec.Version
 			cluster.Status.ControlPlaneReady = true
+			kcp.Status.ReadyReplicas = int32(readyPods)
+			kcp.Status.UnavailableReplicas = int32(numPods - readyPods)
         }
     }
 

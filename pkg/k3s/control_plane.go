@@ -458,6 +458,7 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 								"server",
 								"--debug",
 								"--disable-agent",
+								"--disable-cloud-controller",
 								"--egress-selector-mode",
 								"cluster",
 								"--node-name",
