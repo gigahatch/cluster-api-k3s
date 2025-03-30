@@ -48,7 +48,7 @@ import (
 
 	rest "k8s.io/client-go/rest"
     clientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
-    //"strings"
+    "strings"
 )
 
 var (
@@ -445,10 +445,15 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 					},
 				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: "nodeport-reader",
 					Containers: []corev1.Container{
 						{
 							Name:  "k3s",
-							Image: fmt.Sprintf("roastpiece/k3s:%s", "v1.31.7-k3s1-build.1"),//strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
+							//Image: fmt.Sprintf("roastpiece/k3s:%s", "v1.31.7-k3s1-build.1"),//strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
+							Image: fmt.Sprintf("rancher/k3s:%s", strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
+							Command: []string{
+								"/usr/bin/gigahatch/start-k3s.sh",
+							},
 							Args: []string{
 								"server",
 								"--debug",
@@ -500,6 +505,18 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 									Name: "certificates-dst",
 									MountPath: "/var/lib/rancher/k3s/server/tls",
 								},
+								{
+									Name: "gigahatch-scripts",
+									MountPath: "/usr/bin/gigahatch",
+								},
+								{
+									Name: "config",
+									MountPath: "/config",
+								},
+								{
+									Name: "block-sa",
+									MountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
+								},
 							},
 						},
 					},
@@ -524,8 +541,60 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 								},
 							},
 						},
+						{
+							Name: "wait-for-service",
+							Image: "portainer/kubectl-shell",
+							Command: []string{
+								"/bin/bash",
+								"-c",
+								"/usr/bin/gigahatch/waitForService.sh",
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name: "gigahatch-scripts",
+									MountPath: "/usr/bin/gigahatch",
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "CTRL_PLANE_NAME",
+									Value: c.KCP.Name,
+								},
+							},
+						},
+						{
+							Name: "fetch-service-config",
+							Image: "portainer/kubectl-shell",
+							Command: []string{
+								"/bin/bash",
+								"-c",
+								"/usr/bin/gigahatch/fetchServiceConfig.sh",
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name: "gigahatch-scripts",
+									MountPath: "/usr/bin/gigahatch",
+								},
+								{
+									Name: "config",
+									MountPath: "/config",
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "CTRL_PLANE_NAME",
+									Value: c.KCP.Name,
+								},
+							},
+						},
 					},
 					Volumes: []corev1.Volume{
+						{
+							Name: "block-sa",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
 						{
 							Name: "certificates-dst",
 							VolumeSource: corev1.VolumeSource{
@@ -592,6 +661,23 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 								},
 							},
 						},
+						{
+							Name: "gigahatch-scripts",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "gigahatch-scripts",
+									},
+									DefaultMode: func(i int32) *int32 { return &i }(0555),
+								},
+							},
+						},
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
 					},
 				},
 
@@ -616,6 +702,7 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*Co
 					Port: 6443,
 				},
 			},
+			Type: corev1.ServiceTypeNodePort,
 		},
 	}
 
