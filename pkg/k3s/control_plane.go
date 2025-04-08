@@ -22,10 +22,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-    appsv1 "k8s.io/api/apps/v1"
-    gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-    gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-    resource "k8s.io/apimachinery/pkg/api/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -38,17 +34,14 @@ import (
 	"sigs.k8s.io/cluster-api/util/failuredomains"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-    "k8s.io/apimachinery/pkg/util/intstr"
 
-    
-
+	v1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
+	k3sserverv1alphav1 "github.com/gigahatch/k3s-kubernetes-server-controller/api/v1alpha1"
 	bootstrapv1 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta2"
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
 	"github.com/k3s-io/cluster-api-k3s/pkg/machinefilters"
 
 	rest "k8s.io/client-go/rest"
-    clientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
-    "strings"
 )
 
 var (
@@ -65,8 +58,8 @@ type ControlPlane struct {
 	Machines             collections.Machines
 	machinesPatchHelpers map[string]*patch.Helper
 
-    // IsAgentless is true if the control plane is agentless.
-    IsAgentless          bool
+	// IsAgentless is true if the control plane is agentless.
+	IsAgentless bool
 
 	// check if mgmt cluster has target cluster's etcd ca.
 	// for old cluster created before connect-etcd feature, mgmt cluster don't
@@ -80,12 +73,6 @@ type ControlPlane struct {
 	// See discussion on https://github.com/kubernetes-sigs/cluster-api/pull/3405
 	KthreesConfigs map[string]*bootstrapv1.KThreesConfig
 	InfraResources map[string]*unstructured.Unstructured
-}
-
-type ControlPlaneAgentlessDeployment struct {
-    Deployment appsv1.Deployment
-    Service corev1.Service
-    TLSRoute gatewayv1alpha2.TLSRoute
 }
 
 // NewControlPlane returns an instantiated ControlPlane.
@@ -120,7 +107,7 @@ func NewControlPlane(ctx context.Context, client client.Client, cluster *cluster
 		return nil, err
 	}
 
-    isAgentless := kcp.Spec.AgentlessConfig != nil
+	isAgentless := kcp.Spec.AgentlessConfig != nil
 
 	return &ControlPlane{
 		KCP:                  kcp,
@@ -131,7 +118,7 @@ func NewControlPlane(ctx context.Context, client client.Client, cluster *cluster
 		KthreesConfigs:       kthreesConfigs,
 		InfraResources:       infraObjects,
 		reconciliationTime:   metav1.Now(),
-        IsAgentless:          isAgentless,
+		IsAgentless:          isAgentless,
 	}, nil
 }
 
@@ -406,416 +393,95 @@ func (c *ControlPlane) SetPatchHelpers(patchHelpers map[string]*patch.Helper) {
 }
 
 func (c *ControlPlane) GetControlPlaneClusterObjectKey() (types.NamespacedName, error) {
-    if c.KCP.Spec.AgentlessConfig == nil {
-        return types.NamespacedName{}, errors.New("control plane is not agentless")
-    }
-    return types.NamespacedName{
-        Namespace: c.KCP.Namespace,
-        Name:      c.KCP.Spec.AgentlessConfig.ControlPlaneClusterName,
-    }, nil
+	if c.KCP.Spec.AgentlessConfig == nil {
+		return types.NamespacedName{}, errors.New("control plane is not agentless")
+	}
+	return types.NamespacedName{
+		Namespace: c.KCP.Namespace,
+		Name:      c.KCP.Spec.AgentlessConfig.ControlPlaneClusterName,
+	}, nil
 }
 
 // AgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
-func (c *ControlPlane) CreateAgentlessControlPlaneDeployment(token *string) (*ControlPlaneAgentlessDeployment, error) {
-    if c.KCP.Spec.AgentlessConfig == nil {
-        return nil, errors.New("control plane is not agentless")
-    }
-
-    controlPlanePort := gatewayv1.PortNumber(6443)
-    controlPlaneNamespace := gatewayv1.Namespace(c.KCP.Namespace)
-
-	traefikNamespace := gatewayv1.Namespace("traefik-v2")
-	kubernetesSection := gatewayv1.SectionName("kubernetes")
-
-	deployment := appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: c.KCP.Namespace,
-			Name:      c.KCP.Name,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					clusterv1.ClusterNameLabel: c.Cluster.Name,
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						clusterv1.ClusterNameLabel: c.Cluster.Name,
-					},
-				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: "nodeport-reader",
-					Containers: []corev1.Container{
-						{
-							Name:  "k3s",
-							//Image: fmt.Sprintf("roastpiece/k3s:%s", "v1.31.7-k3s1-build.1"),//strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
-							Image: fmt.Sprintf("rancher/k3s:%s", strings.Replace(c.KCP.Spec.Version, "+", "-", -1)),
-							Command: []string{
-								"/usr/bin/gigahatch/start-k3s.sh",
-							},
-							Args: []string{
-								"server",
-								"--debug",
-								"--disable-agent",
-								"--disable-cloud-controller",
-								"--egress-selector-mode",
-								"cluster",
-								"--node-name",
-								c.Cluster.Spec.ControlPlaneEndpoint.Host,
-								"--tls-san",
-								c.Cluster.Spec.ControlPlaneEndpoint.Host,
-								"--node-external-dns",
-								c.Cluster.Spec.ControlPlaneEndpoint.Host,
-								"--disable",
-								"servicelb",
-								"--disable",
-								"metrics-server",
-								"--disable",
-								"local-storage",
-								"--disable",
-								"traefik",
-								"--flannel-backend",
-								"wireguard-native",
-								"--flannel-external-ip",
-								"--cluster-cidr=10.42.0.0/16",
-								"--service-cidr=10.43.0.0/16",
-								"--kube-apiserver-arg",
-								fmt.Sprintf("--external-hostname=%s", c.Cluster.Spec.ControlPlaneEndpoint.Host),
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name: "K3S_TOKEN",
-									Value: *token,
-								},
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: 6443,
-									Name: "kubernetes",
-								},
-							},
-							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU: resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("1000Mi"),
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name: "certificates-dst",
-									MountPath: "/var/lib/rancher/k3s/server/tls",
-								},
-								{
-									Name: "gigahatch-scripts",
-									MountPath: "/usr/bin/gigahatch",
-								},
-								{
-									Name: "config",
-									MountPath: "/config",
-								},
-								{
-									Name: "block-sa",
-									MountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
-								},
-							},
-						},
-					},
-					InitContainers: []corev1.Container{
-						// init container to copy the cetificates from .tls-certs to tls folder
-						{
-							Name:  "copy-certs",
-							Image: "busybox:1.28",
-							Command: []string{
-								"sh",
-								"-c",
-								"cp -Lr /var/lib/rancher/k3s/server/.tls-certs/* /var/lib/rancher/k3s/server/tls/",
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name: "certificates",
-									MountPath: "/var/lib/rancher/k3s/server/.tls-certs",
-								},
-								{
-									Name: "certificates-dst",
-									MountPath: "/var/lib/rancher/k3s/server/tls",
-								},
-							},
-						},
-						{
-							Name: "wait-for-service",
-							Image: "portainer/kubectl-shell",
-							Command: []string{
-								"/bin/bash",
-								"-c",
-								"/usr/bin/gigahatch/waitForService.sh",
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name: "gigahatch-scripts",
-									MountPath: "/usr/bin/gigahatch",
-								},
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name: "CTRL_PLANE_NAME",
-									Value: c.KCP.Name,
-								},
-							},
-						},
-						{
-							Name: "fetch-service-config",
-							Image: "portainer/kubectl-shell",
-							Command: []string{
-								"/bin/bash",
-								"-c",
-								"/usr/bin/gigahatch/fetchServiceConfig.sh",
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name: "gigahatch-scripts",
-									MountPath: "/usr/bin/gigahatch",
-								},
-								{
-									Name: "config",
-									MountPath: "/config",
-								},
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name: "CTRL_PLANE_NAME",
-									Value: c.KCP.Name,
-								},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "block-sa",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-						{
-							Name: "certificates-dst",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-						{
-							Name: "certificates",
-							VolumeSource: corev1.VolumeSource{
-								Projected: &corev1.ProjectedVolumeSource{
-									Sources: []corev1.VolumeProjection{
-										{
-											Secret: &corev1.SecretProjection{
-												LocalObjectReference: corev1.LocalObjectReference{
-													Name: fmt.Sprintf("%s-ca", c.Cluster.Name),
-												},
-												Items: []corev1.KeyToPath{
-													{
-														Key:  "tls.crt",
-														Path: "server-ca.crt",
-													},
-													{
-														Key:  "tls.key",
-														Path: "server-ca.key",
-													},
-												},
-											},
-										},
-										{
-											Secret: &corev1.SecretProjection{
-												LocalObjectReference: corev1.LocalObjectReference{
-													Name: fmt.Sprintf("%s-cca", c.Cluster.Name),
-												},
-												Items: []corev1.KeyToPath{
-													{
-														Key:  "tls.crt",
-														Path: "client-ca.crt",
-													},
-													{
-														Key:  "tls.key",
-														Path: "client-ca.key",
-													},
-												},
-											},
-										},
-										{
-											Secret: &corev1.SecretProjection{
-												LocalObjectReference: corev1.LocalObjectReference{
-													Name: fmt.Sprintf("%s-etcd", c.Cluster.Name),
-												},
-												Items: []corev1.KeyToPath{
-													{
-														Key:  "tls.crt",
-														Path: "etcd/server-ca.crt",
-													},
-													{
-														Key:  "tls.key",
-														Path: "etcd/server-ca.key",
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-						{
-							Name: "gigahatch-scripts",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "gigahatch-scripts",
-									},
-									DefaultMode: func(i int32) *int32 { return &i }(0555),
-								},
-							},
-						},
-						{
-							Name: "config",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-					},
-				},
-
-			},
-
-		},
+func (c *ControlPlane) CreateAgentlessControlPlaneDeployment() (*k3sserverv1alphav1.K3sServer, error) {
+	if c.KCP.Spec.AgentlessConfig == nil {
+		return nil, errors.New("control plane is not agentless")
 	}
 
-	service := corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: c.KCP.Namespace,
-			Name:      c.KCP.Name,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{
-				clusterv1.ClusterNameLabel: c.Cluster.Name,
-			},
-			Ports: []corev1.ServicePort{
-				{
-					Name: "kubernetes",
-					TargetPort: intstr.FromString("kubernetes"),
-					Port: 6443,
-				},
-			},
-			Type: corev1.ServiceTypeNodePort,
-		},
-	}
+	pgStorageClass := "longhorn-pg"
 
-	tlsRoute := gatewayv1alpha2.TLSRoute{
+	return &k3sserverv1alphav1.K3sServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: c.KCP.Namespace,
-			Name:      c.KCP.Name,
+			Name:      c.Cluster.Name,
+			Namespace: "default",
 		},
-		Spec: gatewayv1alpha2.TLSRouteSpec{
-			Hostnames: []gatewayv1alpha2.Hostname{
-				gatewayv1alpha2.Hostname(c.Cluster.Spec.ControlPlaneEndpoint.Host),
-			},
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{
-						Namespace: &traefikNamespace,
-						Name: "traefik-gateway",
-						SectionName: &kubernetesSection,
-					},
+		Spec: k3sserverv1alphav1.K3sServerSpec{
+			Version:  c.KCP.Spec.Version,
+			Hostname: c.Cluster.Spec.ControlPlaneEndpoint.Host,
+			Replicas: *c.KCP.Spec.Replicas,
+			Secrets: &k3sserverv1alphav1.K3sServerSecrets{
+				Token: corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-token", c.Cluster.Name),
+				},
+				ClientCa: &corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-cca", c.Cluster.Name),
+				},
+				ServerCa: &corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-ca", c.Cluster.Name),
+				},
+				EtcdCa: &corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-etcd", c.Cluster.Name),
 				},
 			},
-			Rules: []gatewayv1alpha2.TLSRouteRule{
-				{
-					BackendRefs: []gatewayv1.BackendRef{
-						{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: gatewayv1.ObjectName(c.KCP.Name),
-								Namespace: &controlPlaneNamespace,
-								Port: &controlPlanePort,
-							},
-						},
+			StorageBackend: k3sserverv1alphav1.K3sServerStorageBackend{
+				Postgres: &k3sserverv1alphav1.PostgresBackend{
+					Instances: 2,
+					Storage: v1.StorageConfiguration{
+						StorageClass: &pgStorageClass,
+						Size:         "1Gi",
 					},
 				},
 			},
 		},
-	}
-
-    return &ControlPlaneAgentlessDeployment{
-        Deployment: deployment,
-        Service: service,
-        TLSRoute: tlsRoute,
-    },
-    nil
+	}, nil
 }
 
 // GetAgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
-func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, client client.Client, restConfig *rest.Config) (*ControlPlaneAgentlessDeployment, error) {
-    if c.KCP.Spec.AgentlessConfig == nil {
-        return nil, errors.New("control plane is not agentless")
-    }
+func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, client client.Client) (*k3sserverv1alphav1.K3sServer, error) {
+	if c.KCP.Spec.AgentlessConfig == nil {
+		return nil, errors.New("control plane is not agentless")
+	}
 
-    deployment := &appsv1.Deployment{}
-    deploymentKey := types.NamespacedName{
-        Namespace: c.KCP.Namespace,
-        Name:      c.KCP.Name,
-    }
-    if err := client.Get(ctx, deploymentKey, deployment); err != nil {
-        if apierrors.IsNotFound(err) {
-            return nil, nil
-        }
-        return nil, err
-    }
+	server := &k3sserverv1alphav1.K3sServer{}
+	serverKey := types.NamespacedName{
+		Namespace: "default",
+		Name:      c.Cluster.Name,
+	}
 
-    service := &corev1.Service{}
-    serviceKey := types.NamespacedName{
-        Namespace: c.KCP.Namespace,
-        Name:      c.KCP.Name,
-    }
-    if err := client.Get(ctx, serviceKey, service); err != nil {
-        if apierrors.IsNotFound(err) {
-            return nil, nil
-        }
-        return nil, err
-    }
+	if err := client.Get(ctx, serverKey, server); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
 
-    // get client for gateway api
-    gatewayClients,err := clientset.NewForConfig(restConfig)
-    if (err != nil) {
-        return nil, err
-    }
-    gatewayv1alpha2Client := gatewayClients.GatewayV1alpha2()
-
-    tlsRoute,err := gatewayv1alpha2Client.TLSRoutes(c.KCP.Namespace).Get(ctx, c.KCP.Name, metav1.GetOptions{})
-    if err != nil {
-        if apierrors.IsNotFound(err) {
-            return nil, nil
-        }
-        return nil, err
-    }
-
-    return &ControlPlaneAgentlessDeployment{
-        Deployment: *deployment,
-        Service: *service,
-        TLSRoute: *tlsRoute,
-    }, nil
+	return server, nil
 }
 
 func (c *ControlPlane) DeleteAgentlessControlPlaneDeployment(ctx context.Context, client client.Client, restConfig *rest.Config) (bool, error) {
-    deployment := &appsv1.Deployment{
+	deployment := &k3sserverv1alphav1.K3sServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: c.KCP.Namespace,
-			Name:      c.KCP.Name,
+			Namespace: "default",
+			Name:      c.Cluster.Name,
 		},
 	}
 
 	if err := client.Delete(ctx, deployment); err != nil {
-        if apierrors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return true, nil
-        }
+		}
 		return false, err
 	}
 
 	return false, nil
 }
-
