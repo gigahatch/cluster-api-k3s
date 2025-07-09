@@ -48,6 +48,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	k3sserverv1alphav1 "github.com/gigahatch/k3s-kubernetes-server-controller/api/v1alpha1"
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
 	k3s "github.com/k3s-io/cluster-api-k3s/pkg/k3s"
 	"github.com/k3s-io/cluster-api-k3s/pkg/kubeconfig"
@@ -56,6 +57,7 @@ import (
 	"github.com/k3s-io/cluster-api-k3s/pkg/token"
 	"github.com/k3s-io/cluster-api-k3s/pkg/util/contract"
 	"github.com/k3s-io/cluster-api-k3s/pkg/util/ssa"
+	"sigs.k8s.io/cluster-api/controllers/remote"
 )
 
 // KThreesControlPlaneReconciler reconciles a KThreesControlPlane object.
@@ -111,6 +113,8 @@ func (r *KThreesControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	// Wait for the cluster infrastructure to be ready before creating machines
+	// infrastructure is for us the HetznerCluster
+	// i think this should always be true, as soon as the HetznerCluster is reconciled
 	if !cluster.Status.InfrastructureReady {
 		return reconcile.Result{}, nil
 	}
@@ -142,10 +146,20 @@ func (r *KThreesControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.
 	var res ctrl.Result
 	if !kcp.ObjectMeta.DeletionTimestamp.IsZero() {
 		// Handle deletion reconciliation loop.
-		res, err = r.reconcileDelete(ctx, cluster, kcp)
+		if kcp.Spec.AgentlessConfig != nil {
+			res, err = r.deleteAgentless(ctx, cluster, kcp)
+		} else {
+			res, err = r.reconcileDelete(ctx, cluster, kcp)
+		}
 	} else {
 		// Handle normal reconciliation loop.
-		res, err = r.reconcile(ctx, cluster, kcp)
+		logger.Info("Reconciling KThreesControlPlane", "name", kcp.ObjectMeta.Name)
+		logger.Info("AgentlessConfig", "config", kcp.Spec.AgentlessConfig)
+		if kcp.Spec.AgentlessConfig != nil {
+			res, err = r.reconcileAgentless(ctx, cluster, kcp)
+		} else {
+			res, err = r.reconcile(ctx, cluster, kcp)
+		}
 	}
 
 	// Always attempt to update status.
@@ -253,6 +267,46 @@ func (r *KThreesControlPlaneReconciler) reconcileDelete(ctx context.Context, clu
 	return ctrl.Result{RequeueAfter: deleteRequeueAfter}, nil
 }
 
+func (r *KThreesControlPlaneReconciler) deleteAgentless(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane) (ctrl.Result, error) {
+	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
+	logger.Info("Reconcile KThreesControlPlane agentless deletion")
+
+	controlPlane, err := k3s.NewControlPlane(ctx, r.Client, cluster, kcp, nil)
+	if err != nil {
+		logger.Error(err, "failed to initialize control plane")
+		return reconcile.Result{}, err
+	}
+
+	// get remote client for control plane cluster
+	controlPlaneCluster, err := controlPlane.GetControlPlaneClusterObjectKey()
+	if err != nil {
+		logger.Error(err, "Failed to get control plane cluster object key")
+		return ctrl.Result{}, err
+	}
+
+	restConfig, err := remote.RESTConfig(ctx, "", r.Client, controlPlaneCluster)
+	remoteClient, err := remote.NewClusterClient(ctx, "", r.Client, controlPlaneCluster)
+	if err != nil {
+		logger.Error(err, "Failed to create client to control plane cluster")
+		return ctrl.Result{}, err
+	}
+
+	isDeleted, err := controlPlane.DeleteAgentlessControlPlaneDeployment(ctx, remoteClient, restConfig)
+	if err != nil {
+		logger.Error(err, "Failed to delete agentless control plane deployment")
+		return ctrl.Result{}, err
+	}
+	if isDeleted {
+		logger.Info("Agentless control plane deployment deleted")
+		controllerutil.RemoveFinalizer(kcp, controlplanev1.KThreesControlPlaneFinalizer)
+		return reconcile.Result{}, nil
+	}
+
+	logger.Info("Waiting for agentless control plane deployment to be deleted")
+	conditions.MarkFalse(kcp, controlplanev1.ResizedCondition, clusterv1.DeletingReason, clusterv1.ConditionSeverityInfo, "")
+	return ctrl.Result{RequeueAfter: deleteRequeueAfter}, nil
+}
+
 func patchKThreesControlPlane(ctx context.Context, patchHelper *patch.Helper, kcp *controlplanev1.KThreesControlPlane) error {
 	// Always update the readyCondition by summarizing the state of other conditions.
 	conditions.SetSummary(kcp,
@@ -346,6 +400,10 @@ func (r *KThreesControlPlaneReconciler) ClusterToKThreesControlPlane(ctx context
 // updateStatus is called after every reconcilitation loop in a defer statement to always make sure we have the
 // resource status subresourcs up-to-date.
 func (r *KThreesControlPlaneReconciler) updateStatus(ctx context.Context, kcp *controlplanev1.KThreesControlPlane, cluster *clusterv1.Cluster) error {
+	if kcp.Spec.AgentlessConfig != nil {
+		return r.updateStatusAgentless(ctx, kcp, cluster)
+	}
+
 	selector := collections.ControlPlaneSelectorForCluster(cluster.Name)
 	// Copy label selector to its status counterpart in string format.
 	// This is necessary for CRDs including scale subresources.
@@ -453,6 +511,11 @@ func (r *KThreesControlPlaneReconciler) updateStatus(ctx context.Context, kcp *c
 		controlPlane.KCP.Status.LastRemediation = lastRemediation.ToStatus()
 	}
 
+	return nil
+}
+
+func (r *KThreesControlPlaneReconciler) updateStatusAgentless(ctx context.Context, kcp *controlplanev1.KThreesControlPlane, cluster *clusterv1.Cluster) error {
+	// todo
 	return nil
 }
 
@@ -581,6 +644,142 @@ func (r *KThreesControlPlaneReconciler) reconcile(ctx context.Context, cluster *
 		logger.Info("Scaling down control plane", "Desired", desiredReplicas, "Existing", numMachines)
 		// The last parameter (i.e. machines needing to be rolled out) should always be empty here.
 		return r.scaleDownControlPlane(ctx, cluster, kcp, controlPlane, collections.Machines{})
+	}
+
+	// Get the workload cluster client.
+	/**
+	workloadCluster, err := r.managementCluster.GetWorkloadCluster(ctx, util.ObjectKey(cluster))
+	if err != nil {
+		logger.V(2).Info("cannot get remote client to workload cluster, will requeue", "cause", err)
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Update kube-proxy daemonset.
+	if err := workloadCluster.UpdateKubeProxyImageInfo(ctx, kcp); err != nil {
+		logger.Error(err, "failed to update kube-proxy daemonset")
+		return reconcile.Result{}, err
+	}
+
+	// Update CoreDNS deployment.
+	if err := workloadCluster.UpdateCoreDNS(ctx, kcp); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to update CoreDNS deployment")
+	}
+	**/
+
+	return reconcile.Result{}, nil
+}
+
+func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, cluster *clusterv1.Cluster, kcp *controlplanev1.KThreesControlPlane) (ctrl.Result, error) {
+	logger := r.Log.WithValues("namespace", kcp.Namespace, "KThreesControlPlane", kcp.Name, "cluster", cluster.Name)
+	logger.Info("Reconcile KThreesControlPlane Agentless")
+
+	certificates := secret.NewCertificatesForInitialControlPlane(&kcp.Spec.KThreesConfigSpec)
+	controllerRef := metav1.NewControllerRef(kcp, controlplanev1.GroupVersion.WithKind("KThreesControlPlane"))
+	if err := certificates.LookupOrGenerate(ctx, r.Client, util.ObjectKey(cluster), *controllerRef); err != nil {
+		logger.Error(err, "unable to lookup or create cluster certificates")
+		conditions.MarkFalse(kcp, controlplanev1.CertificatesAvailableCondition, controlplanev1.CertificatesGenerationFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		return reconcile.Result{}, err
+	}
+	conditions.MarkTrue(kcp, controlplanev1.CertificatesAvailableCondition)
+
+	if err := token.Reconcile(ctx, r.Client, client.ObjectKeyFromObject(cluster), kcp); err != nil {
+		conditions.MarkFalse(kcp, controlplanev1.TokenAvailableCondition, controlplanev1.TokenGenerationFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		return reconcile.Result{}, err
+	}
+	conditions.MarkTrue(kcp, controlplanev1.TokenAvailableCondition)
+
+	// If ControlPlaneEndpoint is not set, return early
+	if !cluster.Spec.ControlPlaneEndpoint.IsValid() {
+		logger.Info("Cluster does not yet have a ControlPlaneEndpoint defined")
+		return reconcile.Result{}, nil
+	}
+
+	// Generate Cluster Kubeconfig if needed
+	if result, err := r.reconcileKubeconfig(ctx, util.ObjectKey(cluster), cluster.Spec.ControlPlaneEndpoint, kcp); err != nil {
+		logger.Error(err, "failed to reconcile Kubeconfig")
+		return result, err
+	}
+
+	controlPlane, err := k3s.NewControlPlane(ctx, r.Client, cluster, kcp, nil)
+	if err != nil {
+		logger.Error(err, "failed to initialize control plane")
+		return reconcile.Result{}, err
+	}
+
+	// get remote client for control plane cluster
+	controlPlaneCluster, err := controlPlane.GetControlPlaneClusterObjectKey()
+	if err != nil {
+		logger.Error(err, "Failed to get control plane cluster object key")
+		return ctrl.Result{}, err
+	}
+
+	remoteClient, err := remote.NewClusterClient(ctx, "", r.Client, controlPlaneCluster)
+	if err != nil {
+		logger.Error(err, "Failed to create client to control plane cluster")
+		return ctrl.Result{}, err
+	}
+
+	deployment, err := controlPlane.GetAgentlessControlPlaneDeployment(ctx, remoteClient)
+	if err != nil {
+		logger.Error(err, "Failed to get agentless control plane deployment")
+		return ctrl.Result{}, err
+	}
+
+	// mark machines ready as true, as we don't have machines
+	conditions.MarkTrue(kcp, controlplanev1.MachinesReadyCondition)
+
+	// check if the deployment is ready
+	numPods := 0
+	desiredReplicas := 1
+	if deployment != nil {
+		readyCondition := deployment.GetCondition(k3sserverv1alphav1.K3sServerReadyCondition)
+		if readyCondition != nil && readyCondition.Status == metav1.ConditionTrue {
+			kcp.Status.Ready = true
+
+			numPods = int(deployment.Spec.Replicas)
+			readyPods := int(deployment.Status.ReadyReplicas)
+
+			logger.Info("Ctrlplane is ready")
+			conditions.MarkTrue(kcp, controlplanev1.AvailableCondition)
+			kcp.Status.Initialized = true
+			kcp.Status.Version = &kcp.Spec.Version
+			cluster.Status.ControlPlaneReady = true
+			kcp.Status.ReadyReplicas = int32(readyPods)
+			kcp.Status.UnavailableReplicas = int32(numPods - readyPods)
+		}
+	}
+
+	// Aggregate the operational state of all the machines; while aggregating we are adding the
+	// source ref (reason@machine/name) so the problem can be easily tracked down to its source machine.
+	// conditions.SetAggregate(controlPlane.KCP, controlplanev1.MachinesReadyCondition, ownedMachines.ConditionGetters(), conditions.AddSourceRef(), conditions.WithStepCounterIf(false))
+
+	// agentless: maybe set a condition here if the control plane pod is ready?
+
+	// agentless: i think we can keep this here
+	// Updates conditions reporting the status of static pods and the status of the etcd cluster.
+	// NOTE: Conditions reporting KCP operation progress like e.g. Resized or SpecUpToDate are inlined with the rest of the execution.
+	if err := r.reconcileControlPlaneConditions(ctx, controlPlane); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Control plane machines rollout due to configuration changes (e.g. upgrades) takes precedence over other operations.
+	//needRollout := controlPlane.MachinesNeedingRollout()
+	// agentless: we should check if the deployed version matches the target version
+	// todo: handle update logic
+	// needRollout := collections.Machines{}
+
+	// todo: handle agentless multiple pods
+
+	switch {
+	// We are creating the first replica
+	case numPods < desiredReplicas && numPods == 0:
+		// Create new Machine w/ init
+		logger.Info("Initializing agentless control plane", "Desired", desiredReplicas, "Existing", numPods)
+		conditions.MarkFalse(controlPlane.KCP, controlplanev1.AvailableCondition, controlplanev1.WaitingForKthreesServerReason, clusterv1.ConditionSeverityInfo, "Initializing controlplane")
+		return r.initializeAgentlessControlPlane(ctx, kcp, controlPlane, remoteClient, certificates)
+		// We are scaling up
+		// We are scaling down
+		// todo: agentless handle scaling
 	}
 
 	// Get the workload cluster client.

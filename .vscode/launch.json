@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "K3s Bootstrap Controller",
+            "type": "go",
+            "request": "attach",
+            "mode": "remote",
+            "remotePath": "",
+            "port": 32000,
+            "host": "127.0.0.1",
+            "showLog": true,
+            "trace": "log",
+            "logOutput": "rpc"
+        },
+        {
+            "name": "K3s Controlplane Controller",
+            "type": "go",
+            "request": "attach",
+            "mode": "remote",
+            "remotePath": "",
+            "port": 33000,
+            "host": "127.0.0.1",
+            "showLog": true,
+            "trace": "log",
+            "logOutput": "rpc"
+        }
+    ]
+}

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	k3sserverv1alphav1 "github.com/gigahatch/k3s-kubernetes-server-controller/api/v1alpha1"
 	bootstrapv1beta1 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta1"
 	bootstrapv1 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta2"
 	controlplanev1beta1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta1"
@@ -54,6 +56,8 @@ func init() {
 
 	_ = controlplanev1beta1.AddToScheme(scheme)
 	_ = controlplanev1.AddToScheme(scheme)
+	utilruntime.Must(k3sserverv1alphav1.AddToScheme(scheme))
+
 	// +kubebuilder:scaffold:scheme
 }
 

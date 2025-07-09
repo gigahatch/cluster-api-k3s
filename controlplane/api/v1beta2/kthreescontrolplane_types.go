@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 
+	k3sserverv1alphav1 "github.com/gigahatch/k3s-kubernetes-server-controller/api/v1alpha1"
 	bootstrapv1beta2 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta2"
 	"github.com/k3s-io/cluster-api-k3s/pkg/errors"
 )
@@ -79,11 +80,23 @@ type KThreesControlPlaneSpec struct {
 
 	// MachineTemplate contains information about how machines should be shaped
 	// when creating or updating a control plane.
+	// +optional
 	MachineTemplate KThreesControlPlaneMachineTemplate `json:"machineTemplate,omitempty"`
 
 	// The RemediationStrategy that controls how control plane machine remediation happens.
 	// +optional
 	RemediationStrategy *RemediationStrategy `json:"remediationStrategy,omitempty"`
+
+	// Agentless configuration for the control plane
+	// +optional
+	AgentlessConfig *KThreesAgentlessConfig `json:"agentlessConfig,omitempty"`
+}
+
+// KThreesAgentlessConfig contains configuration for deploying the control plane in an agentless mode
+type KThreesAgentlessConfig struct {
+	// KubeconfigSecret is a reference to a secret containing the kubeconfig for the cluster where the control plane should be deployed
+	ControlPlaneClusterName string                                 `json:"controlPlaneClusterName"`
+	ServerConfig            k3sserverv1alphav1.KThreesServerConfig `json:"agentlessServerConfig"`
 }
 
 // MachineTemplate contains information about how machines should be shaped

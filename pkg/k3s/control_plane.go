@@ -35,9 +35,13 @@ import (
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
+	k3sserverv1alphav1 "github.com/gigahatch/k3s-kubernetes-server-controller/api/v1alpha1"
 	bootstrapv1 "github.com/k3s-io/cluster-api-k3s/bootstrap/api/v1beta2"
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
 	"github.com/k3s-io/cluster-api-k3s/pkg/machinefilters"
+
+	rest "k8s.io/client-go/rest"
 )
 
 var (
@@ -53,6 +57,9 @@ type ControlPlane struct {
 	Cluster              *clusterv1.Cluster
 	Machines             collections.Machines
 	machinesPatchHelpers map[string]*patch.Helper
+
+	// IsAgentless is true if the control plane is agentless.
+	IsAgentless bool
 
 	// check if mgmt cluster has target cluster's etcd ca.
 	// for old cluster created before connect-etcd feature, mgmt cluster don't
@@ -100,6 +107,8 @@ func NewControlPlane(ctx context.Context, client client.Client, cluster *cluster
 		return nil, err
 	}
 
+	isAgentless := kcp.Spec.AgentlessConfig != nil
+
 	return &ControlPlane{
 		KCP:                  kcp,
 		Cluster:              cluster,
@@ -109,6 +118,7 @@ func NewControlPlane(ctx context.Context, client client.Client, cluster *cluster
 		KthreesConfigs:       kthreesConfigs,
 		InfraResources:       infraObjects,
 		reconciliationTime:   metav1.Now(),
+		IsAgentless:          isAgentless,
 	}, nil
 }
 
@@ -380,4 +390,99 @@ func (c *ControlPlane) SetPatchHelpers(patchHelpers map[string]*patch.Helper) {
 	for machineName, patchHelper := range patchHelpers {
 		c.machinesPatchHelpers[machineName] = patchHelper
 	}
+}
+
+func (c *ControlPlane) GetControlPlaneClusterObjectKey() (types.NamespacedName, error) {
+	if c.KCP.Spec.AgentlessConfig == nil {
+		return types.NamespacedName{}, errors.New("control plane is not agentless")
+	}
+	return types.NamespacedName{
+		Namespace: c.KCP.Namespace,
+		Name:      c.KCP.Spec.AgentlessConfig.ControlPlaneClusterName,
+	}, nil
+}
+
+// AgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
+func (c *ControlPlane) CreateAgentlessControlPlaneDeployment() (*k3sserverv1alphav1.K3sServer, error) {
+	if c.KCP.Spec.AgentlessConfig == nil {
+		return nil, errors.New("control plane is not agentless")
+	}
+
+	pgStorageClass := "longhorn-pg"
+
+	return &k3sserverv1alphav1.K3sServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      c.Cluster.Name,
+			Namespace: "default",
+		},
+		Spec: k3sserverv1alphav1.K3sServerSpec{
+			Version:  c.KCP.Spec.Version,
+			Hostname: c.Cluster.Spec.ControlPlaneEndpoint.Host,
+			Replicas: *c.KCP.Spec.Replicas,
+			Secrets: &k3sserverv1alphav1.K3sServerSecrets{
+				Token: corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-token", c.Cluster.Name),
+				},
+				ClientCa: &corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-cca", c.Cluster.Name),
+				},
+				ServerCa: &corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-ca", c.Cluster.Name),
+				},
+				EtcdCa: &corev1.LocalObjectReference{
+					Name: fmt.Sprintf("%s-etcd", c.Cluster.Name),
+				},
+			},
+			StorageBackend: k3sserverv1alphav1.K3sServerStorageBackend{
+				Postgres: &k3sserverv1alphav1.PostgresBackend{
+					Instances: 2,
+					Storage: v1.StorageConfiguration{
+						StorageClass: &pgStorageClass,
+						Size:         "1Gi",
+					},
+				},
+			},
+			ServerConfig: c.KCP.Spec.AgentlessConfig.ServerConfig,
+		},
+	}, nil
+}
+
+// GetAgentlessControlPlaneDeployment returns the control plane deployment object for an agentless control plane.
+func (c *ControlPlane) GetAgentlessControlPlaneDeployment(ctx context.Context, client client.Client) (*k3sserverv1alphav1.K3sServer, error) {
+	if c.KCP.Spec.AgentlessConfig == nil {
+		return nil, errors.New("control plane is not agentless")
+	}
+
+	server := &k3sserverv1alphav1.K3sServer{}
+	serverKey := types.NamespacedName{
+		Namespace: "default",
+		Name:      c.Cluster.Name,
+	}
+
+	if err := client.Get(ctx, serverKey, server); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return server, nil
+}
+
+func (c *ControlPlane) DeleteAgentlessControlPlaneDeployment(ctx context.Context, client client.Client, restConfig *rest.Config) (bool, error) {
+	deployment := &k3sserverv1alphav1.K3sServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      c.Cluster.Name,
+		},
+	}
+
+	if err := client.Delete(ctx, deployment); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+
+	return false, nil
 }
