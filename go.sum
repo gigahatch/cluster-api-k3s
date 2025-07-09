@@ -88,8 +88,8 @@ github.com/fsnotify/fsnotify v1.7.0 h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nos
 github.com/fsnotify/fsnotify v1.7.0/go.mod h1:40Bi/Hjc2AVfZrqy+aj+yEI+/bRxZnMJyTJwOpGvigM=
 github.com/fxamacker/cbor/v2 v2.7.0 h1:iM5WgngdRBanHcxugY4JySA0nk1wZorNOpTgCMedv5E=
 github.com/fxamacker/cbor/v2 v2.7.0/go.mod h1:pxXPTn3joSm21Gbwsv0w9OSA2y1HFR9qXEeXQVeNoDQ=
-github.com/gigahatch/k3s-kubernetes-server-controller v0.0.0-20250408131554-0dd5ed3906a9 h1:vbRQMczZf/yc5KIptGeDj0xU6weiqT0Dk1TY69CJJlU=
-github.com/gigahatch/k3s-kubernetes-server-controller v0.0.0-20250408131554-0dd5ed3906a9/go.mod h1:nhxonHqneKAIn0oCDWi5DAvjoeG3J+xO7lT6CDcXea8=
+github.com/gigahatch/k3s-kubernetes-server-controller v0.0.0-20250411050357-a719d7fb6691 h1:3nadfzNU7cKc0ekVP4Bdknxn7wMRtUR4nD7WWX1b+ok=
+github.com/gigahatch/k3s-kubernetes-server-controller v0.0.0-20250411050357-a719d7fb6691/go.mod h1:wklynu0EktOtFebeVUVS3JSjlQXTfDydLAt+ODWa3mc=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
 github.com/go-logr/logr v1.4.2 h1:6pFjapn8bFcIbiKo3XT4j/BhANplGihG6tvd+8rYgrY=
 github.com/go-logr/logr v1.4.2/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=

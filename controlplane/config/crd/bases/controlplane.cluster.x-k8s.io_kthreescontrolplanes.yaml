@@ -84,54 +84,13 @@ spec:
                 - controlPlaneClusterName
                 type: object
               infrastructureTemplate:
+                $ref: '#/definitions/k8s.io~1api~1core~1v1~0ObjectReference'
                 description: |-
                   InfrastructureTemplate is a required reference to a custom resource
                   offered by an infrastructure provider.
                   In the next API version we will move this into the
                   `KThreesControlPlaneMachineTemplate` struct. See
                   https://github.com/k3s-io/cluster-api-k3s/issues/62
-                properties:
-                  apiVersion:
-                    description: API version of the referent.
-                    type: string
-                  fieldPath:
-                    description: |-
-                      If referring to a piece of an object instead of an entire object, this string
-                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                      For example, if the object reference is to a container within a pod, this would take on a value like:
-                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                      the event) or if no container name is specified "spec.containers[2]" (container with
-                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                      referencing a part of an object.
-                      TODO: this design is not final and this field is subject to change in the future.
-                    type: string
-                  kind:
-                    description: |-
-                      Kind of the referent.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                    type: string
-                  name:
-                    description: |-
-                      Name of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                    type: string
-                  resourceVersion:
-                    description: |-
-                      Specific resourceVersion to which this reference is made, if any.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                    type: string
-                  uid:
-                    description: |-
-                      UID of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
               kthreesConfigSpec:
                 description: |-
                   KThreesConfigSpec is a KThreesConfigSpec
@@ -463,8 +422,8 @@ spec:
                         The Severity field MUST be set only when Status=False.
                       type: string
                     status:
+                      $ref: '#/definitions/k8s.io~1api~1core~1v1~0ConditionStatus'
                       description: Status of the condition, one of True, False, Unknown.
-                      type: string
                     type:
                       description: |-
                         Type of condition in CamelCase or in foo.example.com/CamelCase.
@@ -630,12 +589,80 @@ spec:
               agentlessConfig:
                 description: Agentless configuration for the control plane
                 properties:
+                  agentlessServerConfig:
+                    properties:
+                      bindAddress:
+                        description: 'BindAddress k3s bind address (default: 0.0.0.0)'
+                        type: string
+                      cloudProviderName:
+                        description: 'CloudProviderName defines the --cloud-provider=
+                          kubelet extra arg. (default: "external")'
+                        type: string
+                      clusterCidr:
+                        description: 'ClusterCidr  Network CIDR to use for pod IPs
+                          (default: "10.42.0.0/16")'
+                        type: string
+                      clusterDNS:
+                        description: 'ClusterDNS  Cluster IP for coredns service.
+                          Should be in your service-cidr range (default: 10.43.0.10)'
+                        type: string
+                      clusterDomain:
+                        description: 'ClusterDomain Cluster Domain (default: "cluster.local")'
+                        type: string
+                      disableCloudController:
+                        description: 'DisableCloudController disables k3s default
+                          cloud controller manager. (default: true)'
+                        type: boolean
+                      disableComponents:
+                        description: DisableComponents  specifies extra commands to
+                          run before k3s setup runs
+                        items:
+                          type: string
+                        type: array
+                      httpsListenPort:
+                        description: 'HTTPSListenPort HTTPS listen port (default:
+                          6443)'
+                        type: string
+                      kubeAPIServerArg:
+                        description: KubeAPIServerArgs is a customized flag for kube-apiserver
+                          process
+                        items:
+                          type: string
+                        type: array
+                      kubeControllerManagerArgs:
+                        description: KubeControllerManagerArgs is a customized flag
+                          for kube-controller-manager process
+                        items:
+                          type: string
+                        type: array
+                      kubeSchedulerArgs:
+                        description: KubeSchedulerArgs is a customized flag for kube-scheduler
+                          process
+                        items:
+                          type: string
+                        type: array
+                      serviceCidr:
+                        description: 'ServiceCidr Network CIDR to use for services
+                          IPs (default: "10.43.0.0/16")'
+                        type: string
+                      systemDefaultRegistry:
+                        description: SystemDefaultRegistry defines private registry
+                          to be used for all system images
+                        type: string
+                      tlsSan:
+                        description: TLSSan Add additional hostname or IP as a Subject
+                          Alternative Name in the TLS cert
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   controlPlaneClusterName:
                     description: KubeconfigSecret is a reference to a secret containing
                       the kubeconfig for the cluster where the control plane should
                       be deployed
                     type: string
                 required:
+                - agentlessServerConfig
                 - controlPlaneClusterName
                 type: object
               kthreesConfigSpec:
@@ -857,51 +884,10 @@ spec:
                   when creating or updating a control plane.
                 properties:
                   infrastructureRef:
+                    $ref: '#/definitions/k8s.io~1api~1core~1v1~0ObjectReference'
                     description: |-
                       InfrastructureRef is a required reference to a custom resource
                       offered by an infrastructure provider.
-                    properties:
-                      apiVersion:
-                        description: API version of the referent.
-                        type: string
-                      fieldPath:
-                        description: |-
-                          If referring to a piece of an object instead of an entire object, this string
-                          should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                          For example, if the object reference is to a container within a pod, this would take on a value like:
-                          "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                          the event) or if no container name is specified "spec.containers[2]" (container with
-                          index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                          referencing a part of an object.
-                          TODO: this design is not final and this field is subject to change in the future.
-                        type: string
-                      kind:
-                        description: |-
-                          Kind of the referent.
-                          More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                        type: string
-                      name:
-                        description: |-
-                          Name of the referent.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      namespace:
-                        description: |-
-                          Namespace of the referent.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                        type: string
-                      resourceVersion:
-                        description: |-
-                          Specific resourceVersion to which this reference is made, if any.
-                          More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                        type: string
-                      uid:
-                        description: |-
-                          UID of the referent.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
                   metadata:
                     description: |-
                       Standard object's metadata.
@@ -1049,8 +1035,8 @@ spec:
                         The Severity field MUST be set only when Status=False.
                       type: string
                     status:
+                      $ref: '#/definitions/k8s.io~1api~1core~1v1~0ConditionStatus'
                       description: Status of the condition, one of True, False, Unknown.
-                      type: string
                     type:
                       description: |-
                         Type of condition in CamelCase or in foo.example.com/CamelCase.

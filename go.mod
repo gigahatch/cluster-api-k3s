@@ -70,7 +70,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
-	github.com/gigahatch/k3s-kubernetes-server-controller v0.0.0-20250408131554-0dd5ed3906a9
+	github.com/gigahatch/k3s-kubernetes-server-controller v0.0.0-20250411050357-a719d7fb6691
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect

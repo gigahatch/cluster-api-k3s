@@ -442,6 +442,7 @@ func (c *ControlPlane) CreateAgentlessControlPlaneDeployment() (*k3sserverv1alph
 					},
 				},
 			},
+			ServerConfig: c.KCP.Spec.AgentlessConfig.ServerConfig,
 		},
 	}, nil
 }

@@ -775,7 +775,7 @@ func (r *KThreesControlPlaneReconciler) reconcileAgentless(ctx context.Context, 
 	case numPods < desiredReplicas && numPods == 0:
 		// Create new Machine w/ init
 		logger.Info("Initializing agentless control plane", "Desired", desiredReplicas, "Existing", numPods)
-		conditions.MarkFalse(controlPlane.KCP, controlplanev1.AvailableCondition, controlplanev1.WaitingForKthreesServerReason, clusterv1.ConditionSeverityInfo, "")
+		conditions.MarkFalse(controlPlane.KCP, controlplanev1.AvailableCondition, controlplanev1.WaitingForKthreesServerReason, clusterv1.ConditionSeverityInfo, "Initializing controlplane")
 		return r.initializeAgentlessControlPlane(ctx, kcp, controlPlane, remoteClient, certificates)
 		// We are scaling up
 		// We are scaling down
